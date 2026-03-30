@@ -1,0 +1,15 @@
+[
+  {
+    "symbol": "AVGO",
+    "name": "博通",
+    "entryPrice": 100,
+    "currentPrice": 100,
+    "quantity": 1,
+    "stopLoss": 90,
+    "highestPrice": 100,
+    "trailingPercent": 0.1,
+    "openedAt": "2026-03-22T11:53:41.988Z",
+    "updatedAt": "2026-03-22T11:53:41.988Z",
+    "status": "OPEN"
+  }
+]
