@@ -23,6 +23,16 @@ export type Quote = {
   date?: string;
 };
 
+export type KBar = {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  source?: string;
+};
+
 const STOCK_NAME_MAP: Record<string, string> = {
   "2308": "台達電",
   "2317": "鴻海",
@@ -40,7 +50,7 @@ function safeNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function round2(value: number): number {
+function round2(value: number) {
   return Number(value.toFixed(2));
 }
 
@@ -70,6 +80,27 @@ function normalizePct(price: number, change: number) {
   const prevClose = price - change;
   if (prevClose <= 0) return 0;
   return round2((change / prevClose) * 100);
+}
+
+function parseTwseNumber(input: unknown) {
+  if (input == null) return 0;
+  const text = String(input).trim().replace(/,/g, "");
+  if (!text || text === "--" || text === "---" || text === "X0.00") return 0;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function formatDateYYYYMMDD(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function shiftDays(base: Date, days: number): Date {
+  const d = new Date(base);
+  d.setDate(d.getDate() + days);
+  return d;
 }
 
 async function fetchFromFinMind(code: string): Promise<Quote | null> {
@@ -128,14 +159,6 @@ async function fetchFromFinMind(code: string): Promise<Quote | null> {
   }
 }
 
-function parseTwseNumber(input: unknown) {
-  if (input == null) return 0;
-  const text = String(input).trim().replace(/,/g, "");
-  if (!text || text === "--" || text === "---" || text === "X0.00") return 0;
-  const n = Number(text);
-  return Number.isFinite(n) ? n : 0;
-}
-
 async function fetchFromTWSE(code: string): Promise<Quote | null> {
   try {
     const now = new Date();
@@ -162,11 +185,10 @@ async function fetchFromTWSE(code: string): Promise<Quote | null> {
     }
 
     const last = rows[rows.length - 1];
-    if (!Array.isArray(last) || last.length < 7) {
+    if (!Array.isArray(last) || last.length < 8) {
       return null;
     }
 
-    // TWSE STOCK_DAY columns:
     // [日期, 成交股數, 成交金額, 開盤價, 最高價, 最低價, 收盤價, 漲跌價差, 成交筆數]
     const volume = parseTwseNumber(last[1]);
     const close = parseTwseNumber(last[6]);
@@ -190,6 +212,109 @@ async function fetchFromTWSE(code: string): Promise<Quote | null> {
   } catch (err: any) {
     console.log(
       "TWSE error:",
+      code,
+      err?.response?.status,
+      err?.response?.data || err?.message || err
+    );
+    return null;
+  }
+}
+
+async function fetchKbarsFromFinMind(code: string, days = 20): Promise<KBar[] | null> {
+  if (!FINMIND_TOKEN) {
+    console.log("FinMind Kbars skipped:", code, "FINMIND_TOKEN missing");
+    return null;
+  }
+
+  try {
+    const startDate = formatDateYYYYMMDD(shiftDays(new Date(), -(days + 40)));
+
+    const response = await axios.get("https://api.finmindtrade.com/api/v4/data", {
+      headers: buildFinMindHeaders(),
+      params: {
+        dataset: "TaiwanStockPrice",
+        data_id: code,
+        start_date: startDate,
+      },
+      timeout: 15000,
+    });
+
+    const raw = response?.data?.data;
+    console.log("FINMIND KBAR RAW:", code, Array.isArray(raw) ? raw.length : 0);
+
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return null;
+    }
+
+    const bars: KBar[] = raw
+      .map((row: any) => ({
+        date: String(row?.date || ""),
+        open: round2(safeNumber(row?.open, 0)),
+        high: round2(safeNumber(row?.max, 0)),
+        low: round2(safeNumber(row?.min, 0)),
+        close: round2(safeNumber(row?.close, 0)),
+        volume: Math.round(safeNumber(row?.Trading_Volume, 0)),
+        source: "finmind",
+      }))
+      .filter((b) => b.open > 0 && b.high > 0 && b.low > 0 && b.close > 0);
+
+    return bars.slice(-days);
+  } catch (err: any) {
+    console.log(
+      "FinMind Kbars error:",
+      code,
+      err?.response?.status,
+      err?.response?.data || err?.message || err
+    );
+    return null;
+  }
+}
+
+async function fetchKbarsFromTWSE(code: string, days = 20): Promise<KBar[] | null> {
+  try {
+    const now = new Date();
+    const yyyymm01 = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}01`;
+
+    const response = await axios.get("https://www.twse.com.tw/exchangeReport/STOCK_DAY", {
+      params: {
+        response: "json",
+        date: yyyymm01,
+        stockNo: code,
+      },
+      timeout: 15000,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        Referer: "https://www.twse.com.tw/",
+      },
+    });
+
+    const rows = response?.data?.data;
+    console.log("TWSE KBAR RAW:", code, Array.isArray(rows) ? rows.length : 0);
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return null;
+    }
+
+    const bars: KBar[] = rows
+      .map((row: any) => {
+        if (!Array.isArray(row) || row.length < 8) return null;
+
+        return {
+          date: String(row[0] || ""),
+          open: round2(parseTwseNumber(row[3])),
+          high: round2(parseTwseNumber(row[4])),
+          low: round2(parseTwseNumber(row[5])),
+          close: round2(parseTwseNumber(row[6])),
+          volume: Math.round(parseTwseNumber(row[1])),
+          source: "twse",
+        } as KBar;
+      })
+      .filter((b): b is KBar => !!b && b.open > 0 && b.high > 0 && b.low > 0 && b.close > 0);
+
+    return bars.slice(-days);
+  } catch (err: any) {
+    console.log(
+      "TWSE Kbars error:",
       code,
       err?.response?.status,
       err?.response?.data || err?.message || err
@@ -227,4 +352,24 @@ export async function getBatchQuotes(codes: string[]): Promise<Quote[]> {
   }
 
   return out;
+}
+
+export async function getKbars(code: string, days = 20): Promise<KBar[]> {
+  const cleanCode = String(code || "").trim();
+
+  if (!cleanCode) {
+    return [];
+  }
+
+  const finmindBars = await fetchKbarsFromFinMind(cleanCode, days);
+  if (Array.isArray(finmindBars) && finmindBars.length > 0) {
+    return finmindBars;
+  }
+
+  const twseBars = await fetchKbarsFromTWSE(cleanCode, days);
+  if (Array.isArray(twseBars) && twseBars.length > 0) {
+    return twseBars;
+  }
+
+  return [];
 }

@@ -1,4 +1,4 @@
-import { getQuote } from "./marketDataEngine";
+import { getQuote, getKbars, type Quote, type KBar } from "./marketDataEngine";
 import { runDecision } from "./decisionEngine";
 
 export type FusionInput = {
@@ -6,159 +6,60 @@ export type FusionInput = {
   symbol?: string;
 };
 
-export type FusionQuote = {
-  symbol: string;
-  name: string;
-  price: number;
-  change: number;
-  pct: number;
-  sector: string;
-  error: string;
-};
-
-export type FusionModel = {
-  action: string;
-  risk: string;
-  score: number;
-  reason: string;
-};
-
 export type FusionResult = {
-  quote: FusionQuote;
-  model: FusionModel;
-  extra: any;
+  quote: Quote;
+  model: ReturnType<typeof runDecision>;
+  bars: KBar[];
+  extra: {
+    supportPrice: number;
+    supportDays: number;
+    structureBroken: boolean;
+    supportReason: string;
+    trailingStopActive: boolean;
+    trailingStopRule: string;
+  };
 };
 
-function safeNumber(v: unknown, fallback = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function normalizeCode(input: FusionInput | string): string {
+  if (typeof input === "string") {
+    return String(input || "").trim();
+  }
+
+  return String(input?.code || input?.symbol || "").trim();
 }
 
-function safeString(v: unknown, fallback = ""): string {
-  if (typeof v === "string" && v.trim() !== "") return v.trim();
-  return fallback;
-}
-
-function normalizeCode(input: FusionInput): string {
-  return safeString(input?.code || input?.symbol, "");
-}
-
-function buildEmptyQuote(code: string): FusionQuote {
-  return {
-    symbol: code,
-    name: code,
-    price: 0,
-    change: 0,
-    pct: 0,
-    sector: "未知",
-    error: "無資料",
-  };
-}
-
-function buildEmptyModel(reason = "無"): FusionModel {
-  return {
-    action: "觀望",
-    risk: "中",
-    score: 0,
-    reason,
-  };
-}
-
-function normalizeQuote(code: string, raw: any): FusionQuote {
-  return {
-    symbol: safeString(raw?.symbol, code),
-    name: safeString(raw?.name, code),
-    price: safeNumber(raw?.price, 0),
-    change: safeNumber(raw?.change, 0),
-    pct: safeNumber(raw?.pct, 0),
-    sector: safeString(raw?.sector, "未知"),
-    error: safeString(raw?.error, ""),
-  };
-}
-function normalizeModel(raw: any): FusionModel {
-  return {
-    action: safeString(raw?.action, "觀望"),
-    risk: safeString(raw?.risk, "中"),
-    score: safeNumber(raw?.score, 0),
-    reason: safeString(raw?.reason, "無"),
-  };
-}
-
-function isValidQuote(q: FusionQuote): boolean {
-  return !!q.symbol && safeNumber(q.price, 0) > 0;
-}
-
-export async function runFusion(input: FusionInput): Promise<FusionResult> {
+export async function runFusion(input: FusionInput | string): Promise<FusionResult> {
   const code = normalizeCode(input);
 
-  if (!code) {
-    return {
-      quote: buildEmptyQuote(""),
-      model: buildEmptyModel("代碼空白"),
-      extra: {
-        ok: false,
-        stage: "input",
-      },
-    };
-  }
+  const quote = await getQuote(code);
+  const bars = await getKbars(code, 20);
 
-  try {
-    const rawQuote = await getQuote(code);
-    const quote = normalizeQuote(code, rawQuote);
+  const model = runDecision({
+    code,
+    name: quote?.name,
+    price: quote?.price,
+    change: quote?.change,
+    pct: quote?.pct,
+    risk: "中",
+    score: 0,
+    breakout: 0,
+    reason: quote?.error || "",
+    bars,
+  });
 
-    console.log("FUSION QUOTE:", quote);
-
-    if (!isValidQuote(quote)) {
-      return {
-        quote: {
-          ...quote,
-          symbol: quote.symbol || code,
-          name: quote.name || code,
-          error: quote.error || "資料無效",
-        },
-        model: buildEmptyModel("無"),
-        extra: {
-          ok: false,
-          stage: "quote",
-          rawQuote,
-        },
-      };
-    }
-
-    const rawDecision = runDecision(quote);
-    const model = normalizeModel(rawDecision);
-
-    console.log("FUSION MODEL:", model);
-
-    return {
-      quote,
-      model,
-      extra: {
-        ok: true,
-        stage: "done",
-      },
-    };
-  } catch (err: any) {
-    console.log("FUSION ERROR:", err?.message || err);
-    return {
-      quote: {
-        symbol: code,
-        name: code,
-        price: 0,
-        change: 0,
-        pct: 0,
-        sector: "未知",
-        error: err?.message || "fusion error",
-      },
-      model: buildEmptyModel("無"),
-      extra: {
-        ok: false,
-        stage: "catch",
-        error: err?.message || String(err),
-      },
-    };
-  }
+  return {
+    quote,
+    model,
+    bars,
+    extra: {
+      supportPrice: model.supportPrice,
+      supportDays: model.supportDays,
+      structureBroken: model.structureBroken,
+      supportReason: model.supportReason,
+      trailingStopActive: model.trailingStopActive,
+      trailingStopRule: model.trailingStopRule,
+    },
+  };
 }
 
 export default runFusion;
-
