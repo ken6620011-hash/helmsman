@@ -1,72 +1,87 @@
+
 import fs from "fs";
 import path from "path";
 
-const DATA_DIR = path.join(__dirname, "../data");
-const FILE_PATH = path.join(DATA_DIR, "positions.json");
-
-function ensureDataFile() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  if (!fs.existsSync(FILE_PATH)) {
-    fs.writeFileSync(FILE_PATH, JSON.stringify([]));
-  }
-}
-
-function readData() {
-  ensureDataFile();
-  const raw = fs.readFileSync(FILE_PATH, "utf-8");
-  return JSON.parse(raw || "[]");
-}
-function writeData(data: any[]) {
-  ensureDataFile();
-  fs.writeFileSync(FILE_PATH, JSON.stringify(data, null, 2));
-}
-
-function generateId() {
-  return (
-    Date.now().toString(36) +
-    Math.random().toString(36).substring(2, 8)
-  );
-}
-function writeData(data: any[]) {
-  ensureDataFile();
-  fs.writeFileSync(FILE_PATH, JSON.stringify(data, null, 2));
-}
-
-export function saveAllPositions(positions: any[]) {
-  writeData(positions);
-}
-
-export function loadAllPositions(): any[] {
-  return readData();
-}
-export function appendPosition(position: any) {
-  const data = readData();
-  data.push(position);
-  writeData(data);
-}
-
-export function updatePosition(symbol: string, updated: any) {
-  const data = readData();
-  const index = data.findIndex((p: any) => p.symbol === symbol);
-  if (index !== -1) {
-    data[index] = { ...data[index], ...updated };
-    writeData(data);
-  }
-}
-export function deletePosition(symbol: string) {
-  const data = readData();
-  const newData = data.filter((p: any) => p.symbol !== symbol);
-  writeData(newData);
-}
-
-export default {
-  saveAllPositions,
-  loadAllPositions,
-  appendPosition,
-  updatePosition,
-  deletePosition,
+type AlertRecord = {
+  code: string;
+  lastAlertTime: number;
+  lastHash: string;
 };
 
+type StorageSchema = {
+  alerts: Record<string, AlertRecord>;
+};
+
+const DATA_PATH = path.join(process.cwd(), "storage.json");
+
+// ===== 讀取 =====
+function load(): StorageSchema {
+  try {
+    if (!fs.existsSync(DATA_PATH)) {
+      return { alerts: {} };
+    }
+    const raw = fs.readFileSync(DATA_PATH, "utf-8");
+    return JSON.parse(raw);
+  } catch (e) {
+    console.error("❌ storage load error", e);
+    return { alerts: {} };
+  }
+}
+
+// ===== 寫入 =====
+function save(data: StorageSchema) {
+  try {
+    fs.writeFileSync(DATA_PATH, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error("❌ storage save error", e);
+  }
+}
+
+// ===== hash（簡單版）=====
+function buildHash(text: string): string {
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    hash = (hash << 5) - hash + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return String(hash);
+}
+
+// ===== 是否允許發送 =====
+export function shouldSendAlert(code: string, content: string, cooldownMs = 10 * 60 * 1000): boolean {
+  const db = load();
+  const now = Date.now();
+  const hash = buildHash(content);
+
+  const record = db.alerts[code];
+
+  if (!record) return true;
+
+  const timeDiff = now - record.lastAlertTime;
+
+  // 冷卻時間內不發
+  if (timeDiff < cooldownMs) {
+    return false;
+  }
+
+  // 內容相同不發
+  if (record.lastHash === hash) {
+    return false;
+  }
+
+  return true;
+}
+
+// ===== 記錄發送 =====
+export function recordAlert(code: string, content: string) {
+  const db = load();
+  const hash = buildHash(content);
+
+  db.alerts[code] = {
+    code,
+    lastAlertTime: Date.now(),
+    lastHash: hash,
+  };
+
+  save(db);
+}

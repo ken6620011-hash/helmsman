@@ -1,135 +1,108 @@
-// 🔥 Alert Gate 封板版（單一決策源 + 去重 + 冷卻 + 穩定輸出）
+/**
+ * Alert Engine（封板版）
+ *
+ * ✅ 責任：
+ * - 根據「最終 decision」判定是否發警報
+ *
+ * ❌ 禁止：
+ * - 不可重新計算 decision
+ * - 不可用 score 自行當作買點
+ * - 不可新增第二套邏輯
+ *
+ * ⚠️ Alert = Decision 的延伸，不是 Decision
+ */
 
-import { runScanner } from "./scannerEngine";
-import { pushText } from "../services/lineReplyService";
+type AlertLevel = "HIGH" | "MEDIUM" | "LOW" | "NONE";
 
-type AlertKey = string;
-
-type AlertState = {
-  lastHash: string;
-  lastSentAt: number;
+type AlertResult = {
+  shouldAlert: boolean;
+  level: AlertLevel;
+  reason: string;
+  title: string;
+  message: string;
 };
 
-const ALERT_STATE = new Map<AlertKey, AlertState>();
-
-// 🔥 冷卻時間（毫秒）— 可自行調整
-const COOLDOWN_MS = 5 * 60 * 1000; // 5 分鐘
-
-// 🔥 是否啟用空訊號提示（可關閉避免打擾）
-const ENABLE_EMPTY_NOTIFY = false;
-
-// 🔥 建立唯一 key（避免不同標的混淆）
-function buildKey(code: string): AlertKey {
-  return `ALERT:${code}`;
-}
-
-// 🔥 生成訊號 hash（避免重複發送）
-function buildHash(row: any): string {
-  return [
-    row.code,
-    row.score,
-    row.action,
-    row.risk,
-    Math.round(Number(row.pct ?? 0) * 100) / 100,
-  ].join("|");
-}
-
-// 🔥 是否允許發送（冷卻 + 去重）
-function shouldSend(key: AlertKey, hash: string): boolean {
-  const now = Date.now();
-  const state = ALERT_STATE.get(key);
-
-  if (!state) return true;
-
-  // ❌ 冷卻中
-  if (now - state.lastSentAt < COOLDOWN_MS) {
-    return false;
+export function runAlertEngine(d: any): AlertResult {
+  if (!d || !d.dataValid) {
+    return {
+      shouldAlert: false,
+      level: "NONE",
+      reason: "資料無效",
+      title: "",
+      message: "",
+    };
   }
 
-  // ❌ 完全相同訊號
-  if (state.lastHash === hash) {
-    return false;
+  /**
+   * 🚫 Gate 1：市場控盤
+   */
+  if (d.marketState === "防守" || d.marketState === "修正") {
+    return {
+      shouldAlert: false,
+      level: "NONE",
+      reason: "市場防守/修正，不發警報",
+      title: "",
+      message: "",
+    };
   }
 
-  return true;
-}
-
-// 🔥 更新狀態
-function updateState(key: AlertKey, hash: string) {
-  ALERT_STATE.set(key, {
-    lastHash: hash,
-    lastSentAt: Date.now(),
-  });
-}
-
-// 🔥 是否為可警報訊號（決策門檻）
-function isAlertable(row: any): boolean {
-  if (!row) return false;
-
-  if (Number(row.score) < 60) return false;
-
-  const blocked = ["防守", "觀望", "出場", "禁止", "禁止進場"];
-  if (blocked.includes(String(row.action))) return false;
-
-  return true;
-}
-
-// 🔥 格式化輸出
-function buildAlertText(row: any): string {
-  const pct = Number(row.pct ?? 0);
-  return [
-    "🚨 即時警報",
-    `${row.code} ${row.name}`,
-    `Score：${row.score}`,
-    `指令：${row.action}`,
-    `風險：${row.risk}`,
-    `漲跌幅：${pct >= 0 ? "+" : ""}${pct}%`,
-  ].join("\n");
-}
-
-// 🔥 主流程（外部呼叫這個）
-export async function runAlert(): Promise<void> {
-  console.log("🔥 ALERT GATE RUN");
-
-  const rows = await runScanner();
-
-  // ===== 沒有機會 =====
-  if (!rows || rows.length === 0) {
-    console.log("🟡 ALERT：無可警報標的");
-
-    if (ENABLE_EMPTY_NOTIFY) {
-      await pushText("🟡 目前無可警報機會股");
-    }
-
-    return;
+  /**
+   * 🚫 Gate 2：高風險
+   */
+  if (d.risk === "高") {
+    return {
+      shouldAlert: false,
+      level: "NONE",
+      reason: "風險過高",
+      title: "",
+      message: "",
+    };
   }
 
-  let sentCount = 0;
-
-  for (const row of rows) {
-    try {
-      if (!isAlertable(row)) continue;
-
-      const key = buildKey(row.code);
-      const hash = buildHash(row);
-
-      if (!shouldSend(key, hash)) {
-        console.log(`⏸ 跳過（冷卻/重複）：${row.code}`);
-        continue;
-      }
-
-      const text = buildAlertText(row);
-
-      await pushText(text);
-
-      updateState(key, hash);
-      sentCount++;
-
-      console.log(`✅ ALERT SENT：${row.code}`);
-    } catch (err) {
-      console.error("❌ ALERT ERROR:", err);
-    }
+  /**
+   * ✅ HIGH：正式進場
+   */
+  if (d.action === "進場") {
+    return {
+      shouldAlert: true,
+      level: "HIGH",
+      reason: "決策為進場",
+      title: `🔥 進場訊號｜${d.code} ${d.name}`,
+      message: `Score:${d.score}｜起爆:${d.breakout}｜市場:${d.marketState}`,
+    };
   }
 
-  console.log(`📊 ALERT 完成：發送 ${sentCount} 筆`);
+  /**
+   * 🟡 MEDIUM：接近進場
+   */
+  if (d.action === "續看" && d.score >= 65 && d.breakout >= 60) {
+    return {
+      shouldAlert: true,
+      level: "MEDIUM",
+      reason: "接近進場條件",
+      title: `⚠️ 接近起爆｜${d.code} ${d.name}`,
+      message: `Score:${d.score}｜起爆:${d.breakout}`,
+    };
+  }
+
+  /**
+   * 🔵 LOW：觀察
+   */
+  if (d.action === "續看") {
+    return {
+      shouldAlert: true,
+      level: "LOW",
+      reason: "條件尚未成熟",
+      title: `👀 觀察｜${d.code} ${d.name}`,
+      message: `Score:${d.score}`,
+    };
+  }
+
+  return {
+    shouldAlert: false,
+    level: "NONE",
+    reason: "無警報條件",
+    title: "",
+    message: "",
+  };
 }

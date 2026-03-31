@@ -16,42 +16,12 @@ export type AutoAlertRunResult = {
   message: string;
 };
 
-type AutoAlertStatus = {
-  running: boolean;
-  busy: boolean;
-  enabled: boolean;
-  intervalMs: number;
-  lastRunAt: number | null;
-  lastSuccessAt: number | null;
-  lastMessage: string;
-  pushReady: boolean;
-};
-
 let timer: NodeJS.Timeout | null = null;
 let isRunning = false;
-let currentConfig: AutoAlertConfig | null = null;
-let lastRunAt: number | null = null;
-let lastSuccessAt: number | null = null;
-let lastMessage = "尚未啟動";
-
-function safeMs(v: unknown, fallback = 300000): number {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(60000, Math.floor(n));
-}
-
-function normalizeConfig(config: AutoAlertConfig): AutoAlertConfig {
-  return {
-    enabled: Boolean(config.enabled),
-    intervalMs: safeMs(config.intervalMs, 300000),
-    linePushToken: String(config.linePushToken || "").trim(),
-    lineUserId: String(config.lineUserId || "").trim(),
-  };
-}
 
 function buildPushText(rows: any[]): string {
   if (!rows.length) {
-    return "🔕 Helmsman 自動警報\n\n本輪無符合警報標的";
+    return "🔕 自動警報\n\n本輪無符合警報標的";
   }
 
   const lines: string[] = [];
@@ -59,17 +29,13 @@ function buildPushText(rows: any[]): string {
   lines.push("");
 
   rows.slice(0, 5).forEach((x: any, i: number) => {
-    const score = Number(x?.score ?? 0);
-    const action = String(x?.action ?? "觀望");
-    const level = String(x?.level ?? "NONE");
-    const code = String(x?.code ?? "未知");
-    const name = String(x?.name ?? code);
-    const reason = String(x?.reason ?? "無");
-    const marketState = String(x?.marketState ?? "未知");
-
-    lines.push(`${i + 1}. ${code} ${name} | Score:${score} | ${action} | ${level}`);
-    lines.push(`   市場：${marketState}`);
-    lines.push(`   原因：${reason}`);
+    lines.push(
+      `${i + 1}. ${x.code} ${x.name} | Score:${x.score} | ${x.action} | ${x.level}`
+    );
+    lines.push(
+      `   起爆:${x.breakout} | 守穩:${x.supportDays}天 | 市場:${x.marketState}`
+    );
+    lines.push(`   判定：${x.reason}`);
   });
 
   return lines.join("\n");
@@ -102,143 +68,94 @@ async function pushLineMessage(
 }
 
 export async function runAutoAlertOnce(
-  rawConfig: AutoAlertConfig
+  config: AutoAlertConfig
 ): Promise<AutoAlertRunResult> {
-  const config = normalizeConfig(rawConfig);
-
   if (!config.enabled) {
-    lastMessage = "自動警報未啟用";
     return {
       ok: true,
       scanned: 0,
       alerts: 0,
       pushed: 0,
-      message: lastMessage,
+      message: "自動警報未啟用",
     };
   }
 
   if (!config.linePushToken || !config.lineUserId) {
-    lastMessage = "LINE push token 或 userId 空白";
     return {
       ok: false,
       scanned: 0,
       alerts: 0,
       pushed: 0,
-      message: lastMessage,
+      message: "LINE push token 或 userId 空白",
     };
   }
-
-  lastRunAt = Date.now();
 
   const result = await runAlertTestEngine();
   const alertRows = result.rows.filter((x) => x.shouldAlert);
 
   if (!alertRows.length) {
-    lastSuccessAt = Date.now();
-    lastMessage = "本輪無符合警報標的";
     return {
       ok: true,
       scanned: result.total,
       alerts: 0,
       pushed: 0,
-      message: lastMessage,
+      message: "本輪無符合警報標的",
     };
   }
 
   const text = buildPushText(alertRows);
   await pushLineMessage(config.linePushToken, config.lineUserId, text);
 
-  lastSuccessAt = Date.now();
-  lastMessage = "LINE 自動警報已送出";
-
   return {
     ok: true,
     scanned: result.total,
     alerts: alertRows.length,
     pushed: 1,
-    message: lastMessage,
+    message: "LINE 自動警報已送出",
   };
 }
 
-async function tick() {
-  if (!currentConfig) {
-    lastMessage = "autoAlert config missing";
-    return;
-  }
-
-  if (isRunning) {
-    console.log("⏸ autoAlert skipped: previous run still active");
-    return;
-  }
-
-  try {
-    isRunning = true;
-    const result = await runAutoAlertOnce(currentConfig);
-    console.log("⏰ autoAlert tick:", result);
-  } catch (error: any) {
-    const detail = error?.response?.data || error?.message || error;
-    lastMessage = `autoAlert error: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`;
-    console.error("❌ autoAlert error:", detail);
-  } finally {
-    isRunning = false;
-  }
-}
-
-export function startAutoAlert(rawConfig: AutoAlertConfig) {
-  const config = normalizeConfig(rawConfig);
-  currentConfig = config;
-
+export function startAutoAlert(config: AutoAlertConfig) {
   if (timer) {
     clearInterval(timer);
     timer = null;
   }
 
   if (!config.enabled) {
-    lastMessage = "autoAlert disabled";
     console.log("⏸ autoAlert disabled");
     return;
   }
 
-  console.log(`⏰ autoAlert started: every ${config.intervalMs} ms`);
+  const intervalMs = Math.max(config.intervalMs, 60_000);
 
-  // 啟動後 3 秒跑第一輪，避免剛啟動就搶資源
-  setTimeout(() => {
-    void tick();
-  }, 3000);
+  console.log(`⏰ autoAlert started: every ${intervalMs} ms`);
 
-  timer = setInterval(() => {
-    void tick();
-  }, config.intervalMs);
+  timer = setInterval(async () => {
+    if (isRunning) return;
+
+    try {
+      isRunning = true;
+      const result = await runAutoAlertOnce(config);
+      console.log("autoAlert:", result.message, result);
+    } catch (error: any) {
+      console.error("autoAlert error:", error?.response?.data || error?.message || error);
+    } finally {
+      isRunning = false;
+    }
+  }, intervalMs);
 }
 
 export function stopAutoAlert() {
   if (timer) {
     clearInterval(timer);
     timer = null;
+    console.log("🛑 autoAlert stopped");
   }
-
-  currentConfig = null;
-  isRunning = false;
-  lastMessage = "autoAlert stopped";
-  console.log("🛑 autoAlert stopped");
 }
 
-export function restartAutoAlert(config: AutoAlertConfig) {
-  stopAutoAlert();
-  startAutoAlert(config);
-}
-
-export function getAutoAlertStatus(): AutoAlertStatus {
+export function getAutoAlertStatus() {
   return {
     running: Boolean(timer),
     busy: isRunning,
-    enabled: Boolean(currentConfig?.enabled),
-    intervalMs: Number(currentConfig?.intervalMs || 0),
-    lastRunAt,
-    lastSuccessAt,
-    lastMessage,
-    pushReady: Boolean(
-      currentConfig?.linePushToken && currentConfig?.lineUserId
-    ),
   };
 }

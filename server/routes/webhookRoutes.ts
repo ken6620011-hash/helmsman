@@ -1,93 +1,143 @@
 import express from "express";
-import { getQuote } from "../engines/marketDataEngine";
-import { runDecision } from "../engines/decisionEngine";
-import { buildStockReplyText, buildScannerText } from "../services/outputService";
+import { runFusion } from "../engines/fusionEngine";
 import { replyText } from "../services/lineReplyService";
-import { runScanner } from "../engines/scannerEngine";
 
 const router = express.Router();
 
+type FusionRawResult = {
+  quote?: {
+    symbol?: string;
+    name?: string;
+    price?: number;
+    change?: number;
+    pct?: number;
+    sector?: string;
+    error?: string;
+  };
+  model?: {
+    action?: string;
+    risk?: string;
+    score?: number;
+    reason?: string;
+  };
+  extra?: any;
+};
+
+type FusionViewResult = {
+  code: string;
+  name: string;
+  price: number;
+  change: number;
+  changePercent: number;
+  action: string;
+  risk: string;
+  score: number;
+  reason: string;
+};
+
+function safeNumber(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeFusionResult(raw: FusionRawResult, fallbackCode: string): FusionViewResult {
+  const quote = raw?.quote || {};
+  const model = raw?.model || {};
+
+  return {
+    code: String(quote.symbol || fallbackCode),
+    name: String(quote.name || fallbackCode),
+    price: safeNumber(quote.price, 0),
+    change: safeNumber(quote.change, 0),
+    changePercent: safeNumber(quote.pct, 0),
+    action: String(model.action || "觀望"),
+    risk: String(model.risk || "中"),
+    score: safeNumber(model.score, 0),
+    reason: String(model.reason || "無"),
+  };
+}
+
 router.post("/", async (req, res) => {
   try {
-    const events = req.body.events;
+    console.log("🔥 webhook hit");
+    console.log("LINE BODY:", JSON.stringify(req.body, null, 2));
 
-    if (!events || events.length === 0) {
+    const events = Array.isArray(req.body?.events) ? req.body.events : [];
+
+    if (events.length === 0) {
       return res.sendStatus(200);
     }
 
     for (const event of events) {
-      if (event.type !== "message") continue;
-      if (event.message.type !== "text") continue;
+      if (event?.type !== "message") continue;
+      if (event?.message?.type !== "text") continue;
 
-      const text = event.message.text.trim();
-      const replyToken = event.replyToken;
+      const userText = String(event?.message?.text || "").trim();
+      const replyToken = String(event?.replyToken || "").trim();
 
       if (!replyToken) continue;
 
-      // ===== 查股 =====
-      if (text.startsWith("查")) {
-        const code = text.replace("查", "").trim();
+      console.log("📩 使用者訊息：", userText);
+
+      if (userText.startsWith("查")) {
+        const code = userText.replace(/^查/, "").trim();
 
         if (!code) {
-          await replyText(replyToken, "請輸入股票代號，例如：查2330");
+          await replyText(replyToken, "請輸入股票代碼，例如：查2317");
           continue;
         }
 
-        try {
-          console.log("🔥 LINE STOCK PATH (decision)");
+        const raw = (await runFusion({ code })) as FusionRawResult;
+        const result = normalizeFusionResult(raw, code);
 
-          const quote: any = await getQuote(code);
-          const decision = await runDecision(quote);
+        console.log("LINE STOCK:", result);
 
-          const reply = buildStockReplyText({
-            code: quote.code || quote.symbol || code,
-            name: quote.name || "",
-            price: quote.price || 0,
-            change: quote.change || 0,
-            changePercent:
-              quote.changePercent ??
-              quote.changePct ??
-              0,
-            score: decision.score,
-            action: decision.action,
-            risk: decision.risk,
-            reason: decision.reason,
-          });
+        const text =
+          `📊 ${result.code} ${result.name}\n` +
+          `現價：${result.price}\n` +
+          `漲跌：${result.change}\n` +
+          `漲跌幅：${result.changePercent}%\n` +
+          `指令：${result.action}\n` +
+          `風險：${result.risk}\n` +
+          `Score：${result.score}\n` +
+          `原因：${result.reason}`;
 
-          await replyText(replyToken, reply);
-        } catch (err) {
-          console.error("❌ LINE 查股錯誤:", err);
-          await replyText(replyToken, "查詢失敗，請稍後再試");
-        }
-
+        await replyText(replyToken, text);
         continue;
       }
 
-      // ===== 掃描 =====
-      if (text === "掃描") {
-        try {
-          console.log("🔥 LINE SCANNER PATH");
+      if (userText === "掃描") {
+        const list = ["2308", "2317", "2330", "2454", "3034"];
+        const results: FusionViewResult[] = [];
 
-          const rows = await runScanner();
-          const reply = buildScannerText(rows);
-
-          await replyText(replyToken, reply);
-        } catch (err) {
-          console.error("❌ LINE 掃描錯誤:", err);
-          await replyText(replyToken, "掃描失敗，請稍後再試");
+        for (const code of list) {
+          const raw = (await runFusion({ code })) as FusionRawResult;
+          const result = normalizeFusionResult(raw, code);
+          results.push(result);
         }
 
+        results.sort((a, b) => b.score - a.score);
+
+        let text = "🔥 今日機會股 TOP 5\n\n";
+
+        results.forEach((r, i) => {
+          text +=
+            `${i + 1}. ${r.code} ${r.name} | Score:${r.score}\n` +
+            `${r.action}\n` +
+            `漲跌幅：${r.changePercent}% | 風險：${r.risk}\n\n`;
+        });
+
+        await replyText(replyToken, text.trim());
         continue;
       }
 
-      // ===== 預設 =====
-      await replyText(replyToken, "指令：查2330 / 掃描");
+      await replyText(replyToken, "指令錯誤，請輸入：查XXXX 或 掃描");
     }
 
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ webhook 錯誤:", err);
-    res.sendStatus(200);
+    return res.sendStatus(200);
+  } catch (error) {
+    console.error("❌ webhook error:", error);
+    return res.sendStatus(500);
   }
 });
 

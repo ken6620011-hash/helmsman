@@ -57,12 +57,7 @@ export function buildStockReplyText(d: StockOutput): string {
 
 export function buildScannerText(rows: any[]): string {
   if (!Array.isArray(rows) || rows.length === 0) {
-    return [
-      "🔥 今日掃描結果",
-      "",
-      "今日無可進場機會股",
-      "原因：盤勢不允許或分數未達進場門檻",
-    ].join("\n");
+    return "🔥 今日機會股 TOP 5\n\n目前無有效資料標的";
   }
 
   const lines: string[] = [];
@@ -109,7 +104,7 @@ export function buildAlertTestText(rows: any[]): string {
     const name = String(x?.name || "");
     const score = safeNumber(x?.score, 0);
     const action = String(x?.action || "觀望");
-    const pct = safeNumber(x?.pct ?? x?.changePercent, 0);
+    const pct = safeNumber(x?.pct, 0);
     const risk = String(x?.risk || "中");
 
     lines.push(`${i + 1}. ${code} ${name} | Score:${score} | ${action}`);
