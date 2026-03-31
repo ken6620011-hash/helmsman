@@ -2,7 +2,11 @@ import express from "express";
 import { replyText } from "../services/lineReplyService";
 import { getQuote } from "../engines/marketDataEngine";
 import { runDecision } from "../engines/decisionEngine";
-import { buildStockOutput, buildStockReplyText, buildScannerText } from "../services/outputService";
+import {
+  buildStockOutput,
+  buildStockReplyText,
+  buildScannerText,
+} from "../services/outputService";
 import { runScanner } from "../engines/scannerEngine";
 
 const router = express.Router();
@@ -13,7 +17,6 @@ router.post("/", async (req, res) => {
     console.log("LINE BODY:", JSON.stringify(req.body, null, 2));
 
     const events = Array.isArray(req.body?.events) ? req.body.events : [];
-
     if (events.length === 0) {
       return res.sendStatus(200);
     }
@@ -40,9 +43,12 @@ router.post("/", async (req, res) => {
         const quote = await getQuote(code);
         const decision = await runDecision(quote);
         const output = buildStockOutput(code, quote, decision);
-        const text = buildStockReplyText(output);
 
-        console.log("LINE STOCK OUTPUT:", output);
+        console.log("✅ NEW WEBHOOK OUTPUT:", output);
+
+        const text =
+          "[WEBHOOK-V2]\n" +
+          buildStockReplyText(output);
 
         await replyText(replyToken, text);
         continue;
@@ -50,15 +56,17 @@ router.post("/", async (req, res) => {
 
       if (userText === "掃描") {
         const rows = await runScanner();
-        const text = buildScannerText(rows);
+        const text =
+          "[WEBHOOK-V2]\n" +
+          buildScannerText(rows);
 
-        console.log("LINE SCANNER OUTPUT:", rows);
+        console.log("✅ NEW WEBHOOK SCANNER:", rows);
 
         await replyText(replyToken, text);
         continue;
       }
 
-      await replyText(replyToken, "指令錯誤，請輸入：查XXXX 或 掃描");
+      await replyText(replyToken, "[WEBHOOK-V2]\n指令錯誤，請輸入：查XXXX 或 掃描");
     }
 
     return res.sendStatus(200);
