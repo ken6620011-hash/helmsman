@@ -1,5 +1,6 @@
-import { getQuote, getKbars, type Quote, type KBar } from "./marketDataEngine";
+import { getQuote, type Quote, type KBar } from "./marketDataEngine";
 import { runDecision } from "./decisionEngine";
+import { getSupportData } from "./supportCacheEngine";
 
 export type FusionInput = {
   code?: string;
@@ -17,6 +18,7 @@ export type FusionResult = {
     supportReason: string;
     trailingStopActive: boolean;
     trailingStopRule: string;
+    supportConfidence?: number;
   };
 };
 
@@ -30,9 +32,9 @@ function normalizeCode(input: FusionInput | string): string {
 
 export async function runFusion(input: FusionInput | string): Promise<FusionResult> {
   const code = normalizeCode(input);
-
   const quote = await getQuote(code);
-  const bars = await getKbars(code, 20);
+
+  const support = getSupportData(code);
 
   const model = runDecision({
     code,
@@ -44,13 +46,15 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     score: 0,
     breakout: 0,
     reason: quote?.error || "",
-    bars,
+    supportPrice: support?.supportPrice || 0,
+    supportDays: support?.supportDays || 0,
+    structureBroken: Boolean(support?.structureBroken),
   });
 
   return {
     quote,
     model,
-    bars,
+    bars: [],
     extra: {
       supportPrice: model.supportPrice,
       supportDays: model.supportDays,
@@ -58,6 +62,7 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
       supportReason: model.supportReason,
       trailingStopActive: model.trailingStopActive,
       trailingStopRule: model.trailingStopRule,
+      supportConfidence: support?.confidence || 0,
     },
   };
 }
