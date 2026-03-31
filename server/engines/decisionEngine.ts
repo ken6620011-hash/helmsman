@@ -1,8 +1,66 @@
+import { calculateSupportFromBars, type SupportInputBar } from "./supportEngine";
+
+export type DecisionInput = {
+  code?: string;
+  symbol?: string;
+  name?: string;
+
+  price?: number;
+  close?: number;
+  change?: number;
+  pct?: number;
+  changePercent?: number;
+
+  score?: number;
+  rawScore?: number;
+  breakout?: number;
+  breakoutScore?: number;
+  risk?: string;
+  riskLevel?: string;
+  reason?: string;
+
+  supportPrice?: number;
+  supportDays?: number;
+  structureBroken?: boolean;
+
+  // 最近K棒（由舊到新）
+  bars?: SupportInputBar[];
+
+  // 其他可能來自 fusion / model / market 的欄位
+  marketState?: string;
+  trend?: string;
+  sector?: string;
+  volume?: number;
+};
+
 export type DecisionResult = {
-  action: "進攻" | "觀望" | "防守";
-  risk: "低" | "中" | "高";
+  code: string;
+  name: string;
+
+  price: number;
+  change: number;
+  changePercent: number;
+
+  // 分數保留：不再因為防守就歸零
   score: number;
+  rawScore: number;
+
+  breakout: number;
+
+  action: string;
+  finalAction: string;
+  risk: string;
   reason: string;
+
+  marketState: string;
+
+  supportPrice: number;
+  supportDays: number;
+  structureBroken: boolean;
+  supportReason: string;
+
+  trailingStopActive: boolean;
+  trailingStopRule: string;
 };
 
 function safeNumber(v: unknown, fallback = 0): number {
@@ -10,138 +68,261 @@ function safeNumber(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
+function round2(v: number): number {
+  return Number(v.toFixed(2));
 }
 
-/**
- * 門檻鎖定版
- *
- * 規則：
- * 1. 進攻：score >= 70
- * 2. 觀望：40 <= score < 70
- * 3. 防守：score < 40
- *
- * 額外硬規則：
- * - pct <= -2 → 直接防守
- * - 無效資料 / price <= 0 → 直接防守
- * - marketState = CORRECTION → 最高只能觀望，不可進攻
- */
-export function runDecision(q: any): DecisionResult {
-  if (!q) {
+function normalizeCode(input: DecisionInput): string {
+  return String(input?.code || input?.symbol || "");
+}
+
+function normalizeName(input: DecisionInput): string {
+  return String(input?.name || normalizeCode(input));
+}
+
+function normalizePrice(input: DecisionInput): number {
+  const price = safeNumber(input?.price, 0);
+  if (price > 0) return price;
+  return safeNumber(input?.close, 0);
+}
+
+function normalizeChangePercent(input: DecisionInput): number {
+  const pct =
+    input?.changePercent ??
+    input?.pct;
+
+  const pctNum = Number(pct);
+  if (Number.isFinite(pctNum)) return round2(pctNum);
+
+  const price = normalizePrice(input);
+  const change = safeNumber(input?.change, 0);
+  if (price <= 0) return 0;
+
+  const prevClose = price - change;
+  if (prevClose <= 0) return 0;
+
+  return round2((change / prevClose) * 100);
+}
+
+function normalizeRisk(input: DecisionInput): string {
+  const raw = String(input?.risk || input?.riskLevel || "").trim();
+
+  if (!raw) return "中";
+
+  if (raw.includes("高")) return "高";
+  if (raw.includes("低")) return "低";
+  return "中";
+}
+
+function normalizeMarketState(input: DecisionInput): string {
+  const s = String(input?.marketState || "").trim();
+
+  if (!s) return "觀望";
+  if (s.includes("攻")) return "攻擊";
+  if (s.includes("防")) return "防守";
+  if (s.includes("修")) return "修正";
+  if (s.includes("觀")) return "觀望";
+
+  return s;
+}
+
+function computeBaseAction(params: {
+  rawScore: number;
+  breakout: number;
+  risk: string;
+  marketState: string;
+}): string {
+  const { rawScore, breakout, risk, marketState } = params;
+
+  if (marketState === "修正" || marketState === "防守") {
+    return "防守";
+  }
+
+  if (risk === "高" && rawScore < 60) {
+    return "防守";
+  }
+
+  if (rawScore >= 70 && breakout >= 60 && risk !== "高") {
+    return "進攻";
+  }
+
+  if (rawScore >= 55) {
+    return "觀望";
+  }
+
+  return "防守";
+}
+
+function computeTrailingStopRule(rawScore: number): {
+  trailingStopActive: boolean;
+  trailingStopRule: string;
+} {
+  if (rawScore >= 70) {
     return {
-      action: "防守",
-      risk: "高",
-      score: 0,
-      reason: "資料缺失",
+      trailingStopActive: true,
+      trailingStopRule: "獲利達 +5% 啟動，從高點回撤 3% 出場",
     };
   }
 
-  const price = safeNumber(q?.price, 0);
-  const pct = safeNumber(q?.pct, 0);
-  const volume = safeNumber(q?.volume, 0);
-
-  // 支援不同命名
-  const rawMarketState = String(
-    q?.marketState ??
-      q?.state ??
-      q?.market_state ??
-      ""
-  ).toUpperCase();
-
-  if (price <= 0) {
+  if (rawScore >= 55) {
     return {
-      action: "防守",
-      risk: "高",
-      score: 0,
-      reason: "無效資料",
+      trailingStopActive: false,
+      trailingStopRule: "尚未啟動（需先達 +5%）",
     };
-  }
-
-  // ===== 因子1：動能 HRS =====
-  let HRS = 50;
-  if (pct > 3) HRS = 90;
-  else if (pct > 1) HRS = 70;
-  else if (pct > -1) HRS = 50;
-  else if (pct > -3) HRS = 30;
-  else HRS = 10;
-
-  // ===== 因子2：波動 HTI =====
-  let HTI = clamp(Math.abs(pct) * 25, 0, 100);
-
-  // ===== 因子3：結構 BREAK =====
-  let BREAK = 40;
-  if (pct > 2) BREAK = 80;
-  else if (pct > 0.5) BREAK = 60;
-  else if (pct > -0.5) BREAK = 40;
-  else BREAK = 20;
-
-  // ===== 因子4：量能 Volume =====
-  let VOL = 40;
-  if (volume > 20000) VOL = 80;
-  else if (volume > 10000) VOL = 60;
-  else if (volume > 3000) VOL = 40;
-  else VOL = 20;
-
-  // ===== Gate =====
-  let gatePenalty = 0;
-
-  if (pct < 0 && volume < 3000) {
-    gatePenalty -= 20;
-  }
-
-  if (pct <= -2) {
-    gatePenalty -= 15;
-  }
-
-  // ===== 多因子加權 =====
-  const scoreRaw =
-    0.35 * HRS +
-    0.25 * HTI +
-    0.2 * BREAK +
-    0.2 * VOL +
-    gatePenalty;
-
-  let score = Math.round(clamp(scoreRaw, 0, 100));
-
-  // ===== 門檻鎖定 =====
-  let action: DecisionResult["action"] = "觀望";
-  let risk: DecisionResult["risk"] = "中";
-  let reason = "盤整";
-
-  // 硬規則1：大跌直接防守
-  if (pct <= -2) {
-    action = "防守";
-    risk = "高";
-    reason = "跌幅過大";
-    return { action, risk, score, reason };
-  }
-
-  if (score >= 70) {
-    action = "進攻";
-    risk = "低";
-    reason = "分數達進攻門檻";
-  } else if (score >= 40) {
-    action = "觀望";
-    risk = "中";
-    reason = "分數落在觀望區";
-  } else {
-    action = "防守";
-    risk = "高";
-    reason = "分數落在防守區";
-  }
-
-  // 硬規則2：修正盤最高只能觀望
-  if (rawMarketState === "CORRECTION" && action === "進攻") {
-    action = "觀望";
-    risk = "高";
-    reason = "市場修正，禁止進攻";
   }
 
   return {
-    action,
+    trailingStopActive: false,
+    trailingStopRule: "未啟動（目前不屬於進攻持有區）",
+  };
+}
+
+function buildMainReason(parts: string[]): string {
+  const filtered = parts
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+
+  return filtered.length ? filtered.join("；") : "無";
+}
+
+export function runDecision(input: DecisionInput): DecisionResult {
+  const code = normalizeCode(input);
+  const name = normalizeName(input);
+
+  const price = normalizePrice(input);
+  const change = safeNumber(input?.change, 0);
+  const changePercent = normalizeChangePercent(input);
+
+  const rawScore = Math.max(
+    0,
+    round2(
+      safeNumber(
+        input?.rawScore,
+        safeNumber(input?.score, 0)
+      )
+    )
+  );
+
+  const breakout = Math.max(
+    0,
+    round2(
+      safeNumber(
+        input?.breakout,
+        safeNumber(input?.breakoutScore, 0)
+      )
+    )
+  );
+
+  const risk = normalizeRisk(input);
+  const marketState = normalizeMarketState(input);
+
+  // ===== 支撐模組 =====
+  let supportPrice = safeNumber(input?.supportPrice, 0);
+  let supportDays = safeNumber(input?.supportDays, 0);
+  let structureBroken = Boolean(input?.structureBroken);
+  let supportReason = "";
+
+  if (Array.isArray(input?.bars) && input.bars.length >= 5) {
+    const support = calculateSupportFromBars(input.bars, price);
+    supportPrice = support.supportPrice;
+    supportDays = support.supportDays;
+    structureBroken = support.structureBroken;
+    supportReason = support.reason;
+  } else {
+    if (supportPrice > 0) {
+      if (!supportDays) supportDays = 0;
+      if (!supportReason) {
+        supportReason = structureBroken
+          ? `跌破支撐 ${supportPrice}`
+          : `支撐 ${supportPrice} 尚待確認`;
+      }
+    } else {
+      supportReason = "尚無有效支撐資料";
+    }
+  }
+
+  // ===== 先保留原始分數，不再歸零 =====
+  const score = rawScore;
+
+  // ===== 基礎決策 =====
+  let action = computeBaseAction({
+    rawScore,
+    breakout,
     risk,
+    marketState,
+  });
+
+  const reasons: string[] = [];
+
+  // ===== 跌幅風控覆蓋，但不再把 score 歸零 =====
+  if (changePercent <= -3) {
+    action = "防守";
+    reasons.push("跌幅過大");
+  }
+
+  // ===== 結構破壞覆蓋 =====
+  if (structureBroken) {
+    action = "防守";
+    reasons.push("跌破支撐");
+  }
+
+  // ===== 盤勢覆蓋 =====
+  if (marketState === "防守" || marketState === "修正") {
+    action = "防守";
+    reasons.push(`市場狀態=${marketState}`);
+  }
+
+  // ===== breakout / score 補充理由 =====
+  if (rawScore >= 70) {
+    reasons.push("分數達進攻區");
+  } else if (rawScore >= 55) {
+    reasons.push("分數在觀察區");
+  } else {
+    reasons.push("分數偏弱");
+  }
+
+  if (breakout >= 60) {
+    reasons.push("起爆條件偏強");
+  } else if (breakout > 0) {
+    reasons.push("起爆尚未完成");
+  }
+
+  if (supportReason) {
+    reasons.push(supportReason);
+  }
+
+  if (String(input?.reason || "").trim()) {
+    reasons.push(String(input.reason).trim());
+  }
+
+  const { trailingStopActive, trailingStopRule } = computeTrailingStopRule(rawScore);
+
+  return {
+    code,
+    name,
+
+    price,
+    change,
+    changePercent,
+
     score,
-    reason,
+    rawScore,
+
+    breakout,
+
+    action,
+    finalAction: action,
+    risk,
+    reason: buildMainReason(reasons),
+
+    marketState,
+
+    supportPrice: round2(supportPrice),
+    supportDays,
+    structureBroken,
+    supportReason,
+
+    trailingStopActive,
+    trailingStopRule,
   };
 }
