@@ -29,12 +29,23 @@ export function buildStockOutput(
   quote: any,
   decision: any
 ): StockOutput {
+  const quoteCode = String(quote?.symbol || code);
+  const quoteName = String(quote?.name || code);
+
+  const price = safeNumber(quote?.price, 0);
+  const change = safeNumber(quote?.change, 0);
+
+  const changePercent =
+    safeNumber(quote?.changePercent, Number.NaN) === safeNumber(quote?.changePercent, Number.NaN)
+      ? safeNumber(quote?.changePercent, 0)
+      : safeNumber(quote?.pct, 0);
+
   return {
-    code: String(quote?.symbol || code),
-    name: String(quote?.name || code),
-    price: safeNumber(quote?.price, 0),
-    change: safeNumber(quote?.change, 0),
-    changePercent: safeNumber(quote?.pct, 0),
+    code: quoteCode,
+    name: quoteName,
+    price,
+    change,
+    changePercent,
     action: String(decision?.action || "觀望"),
     risk: String(decision?.risk || "中"),
     score: safeNumber(decision?.score, 0),
@@ -69,7 +80,10 @@ export function buildScannerText(rows: any[]): string {
     const name = String(row?.name || "");
     const score = safeNumber(row?.score, 0);
     const action = String(row?.action || "觀望");
-    const pct = safeNumber(row?.pct, 0);
+    const pct = safeNumber(
+      row?.changePercent ?? row?.pct,
+      0
+    );
     const risk = String(row?.risk || "中");
 
     lines.push(`${index + 1}. ${code} ${name} | Score:${score}`);
@@ -104,7 +118,10 @@ export function buildAlertTestText(rows: any[]): string {
     const name = String(x?.name || "");
     const score = safeNumber(x?.score, 0);
     const action = String(x?.action || "觀望");
-    const pct = safeNumber(x?.pct, 0);
+    const pct = safeNumber(
+      x?.changePercent ?? x?.pct,
+      0
+    );
     const risk = String(x?.risk || "中");
 
     lines.push(`${i + 1}. ${code} ${name} | Score:${score} | ${action}`);
