@@ -1,6 +1,10 @@
 import express from "express";
 import runFusion from "../engines/fusionEngine";
-import { buildStockOutput, buildStockReplyText, buildScannerText } from "../services/outputService";
+import {
+  buildStockOutput,
+  buildStockReplyText,
+  buildScannerText,
+} from "../services/outputService";
 import { replyText } from "../services/lineReplyService";
 import { SCAN_SYMBOLS } from "../engines/marketDataEngine";
 
@@ -8,9 +12,6 @@ const router = express.Router();
 
 router.post("/", async (req, res) => {
   try {
-    console.log("🔥 webhook hit");
-    console.log("LINE BODY:", JSON.stringify(req.body, null, 2));
-
     const events = Array.isArray(req.body?.events) ? req.body.events : [];
 
     if (!events.length) {
@@ -26,8 +27,6 @@ router.post("/", async (req, res) => {
 
       if (!replyToken) continue;
 
-      console.log("📩 使用者訊息：", userText);
-
       if (userText.startsWith("查")) {
         const code = userText.replace(/^查/, "").trim();
 
@@ -39,8 +38,6 @@ router.post("/", async (req, res) => {
         const fusion = await runFusion({ code });
         const output = buildStockOutput(code, fusion.quote, fusion.model);
         const text = "[WEBHOOK-V2]\n" + buildStockReplyText(output);
-
-        console.log("LINE STOCK:", output);
 
         await replyText(replyToken, text);
         continue;
@@ -55,7 +52,9 @@ router.post("/", async (req, res) => {
           rows.push(output);
         }
 
-        rows.sort((a, b) => Number(b.finalScore ?? b.score ?? 0) - Number(a.finalScore ?? a.score ?? 0));
+        rows.sort(
+          (a, b) => Number(b.finalScore ?? b.score ?? 0) - Number(a.finalScore ?? a.score ?? 0)
+        );
 
         const text = "[WEBHOOK-V2]\n" + buildScannerText(rows);
         await replyText(replyToken, text);
