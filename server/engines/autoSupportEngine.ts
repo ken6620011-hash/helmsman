@@ -1,74 +1,28 @@
-import { SCAN_SYMBOLS, getKbars, getQuote } from "./marketDataEngine";
-import { calculateSupportFromBars } from "./supportEngine";
-import { setSupportCache, getAllSupportCache } from "./supportCacheEngine";
+import getSupport from "./supportEngine";
 
 type AutoSupportConfig = {
-  enabled: boolean;
+  symbols: string[];
   intervalMs: number;
-  symbols?: string[];
-  kbarDays?: number;
 };
 
 let timer: NodeJS.Timeout | null = null;
-let isRunning = false;
+let running = false;
+let busy = false;
 
-function nowText(): string {
-  return new Date().toLocaleString("zh-TW", { hour12: false });
-}
+const defaultConfig: AutoSupportConfig = {
+  symbols: ["2308", "2317", "2330", "2454", "3034"],
+  intervalMs: 300000,
+};
 
-function normalizeSymbols(input?: string[]): string[] {
-  const list = Array.isArray(input) && input.length > 0 ? input : SCAN_SYMBOLS;
-  return Array.from(
-    new Set(
-      list.map((x) => String(x || "").trim()).filter(Boolean)
-    )
-  );
-}
+export async function runAutoSupportOnce(config = defaultConfig) {
+  if (busy) return;
 
-export async function runAutoSupportOnce(config?: Partial<AutoSupportConfig>) {
-  if (isRunning) {
-    console.log("⏳ AutoSupport 忙碌中，略過");
-    return;
-  }
-
-  isRunning = true;
+  busy = true;
 
   try {
-    const symbols = normalizeSymbols(config?.symbols);
-    const kbarDays = Number(config?.kbarDays || 20);
-
-    console.log(`🧠 AutoSupport 開始更新 ${symbols.length} 檔`, nowText());
-
-    for (const code of symbols) {
+    for (const code of config.symbols) {
       try {
-        const [bars, quote] = await Promise.all([
-          getKbars(code, kbarDays),
-          getQuote(code),
-        ]);
-
-        if (!Array.isArray(bars) || bars.length < 5) {
-          console.log(`⚠️ ${code} K棒不足，跳過`);
-          continue;
-        }
-
-        const support = calculateSupportFromBars(
-          bars.map((b) => ({
-            open: b.open,
-            high: b.high,
-            low: b.low,
-            close: b.close,
-          })),
-          quote.price
-        );
-
-        setSupportCache(code, {
-          supportPrice: support.supportPrice,
-          supportDays: support.supportDays,
-          structureBroken: support.structureBroken,
-          confidence: support.confidence,
-          sourceLowCount: support.sourceLowCount,
-          reason: support.reason,
-        });
+        const support = await getSupport(code);
 
         console.log(
           `✅ ${code} 支撐更新`,
@@ -79,39 +33,26 @@ export async function runAutoSupportOnce(config?: Partial<AutoSupportConfig>) {
           })
         );
       } catch (err) {
-        console.error(`❌ ${code} 支撐更新失敗`, err);
+        console.error(`❌ ${code} 支撐計算失敗`, err);
       }
     }
 
-    console.log("🧠 AutoSupport 完成", nowText());
+    console.log(`🟣 AutoSupport 完成 ${new Date().toLocaleString()}`);
   } finally {
-    isRunning = false;
+    busy = false;
   }
 }
 
-export function startAutoSupport(config: AutoSupportConfig) {
-  if (!config.enabled) {
-    console.log("⛔ AutoSupport 未啟用");
-    return;
-  }
+export function startAutoSupport(config = defaultConfig) {
+  if (running) return;
 
-  if (timer) {
-    clearInterval(timer);
-    timer = null;
-  }
-
-  const intervalMs = Number(config.intervalMs || 300000);
-  console.log(`⏰ AutoSupport 啟動，間隔 ${intervalMs} ms`);
-
-  runAutoSupportOnce(config).catch((err) => {
-    console.error("❌ AutoSupport 初次執行失敗", err);
-  });
+  running = true;
 
   timer = setInterval(() => {
-    runAutoSupportOnce(config).catch((err) => {
-      console.error("❌ AutoSupport 排程執行失敗", err);
-    });
-  }, intervalMs);
+    runAutoSupportOnce(config);
+  }, config.intervalMs);
+
+  console.log("🟢 AutoSupport 已啟動");
 }
 
 export function stopAutoSupport() {
@@ -119,13 +60,14 @@ export function stopAutoSupport() {
     clearInterval(timer);
     timer = null;
   }
-  console.log("🛑 AutoSupport 已停止");
+
+  running = false;
+  console.log("🔴 AutoSupport 已停止");
 }
 
 export function getAutoSupportStatus() {
   return {
-    running: !!timer,
-    busy: isRunning,
-    cached: getAllSupportCache().length,
+    running,
+    busy,
   };
 }

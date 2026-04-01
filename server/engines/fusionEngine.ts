@@ -1,6 +1,6 @@
 import { getQuote, getKbars, type Quote, type KBar } from "./marketDataEngine";
 import runPoint21 from "./point21Engine";
-import { getSupportData } from "./supportCacheEngine";
+import { getSupport, type SupportResult } from "./supportEngine";
 import { runDecisionJson, type DecisionResult } from "./decisionEngine";
 
 export type FusionInput = {
@@ -12,13 +12,7 @@ export type FusionResult = {
   quote: Quote;
   bars: KBar[];
   point21: ReturnType<typeof runPoint21>;
-  support: {
-    supportPrice: number;
-    supportDays: number;
-    structureBroken: boolean;
-    supportReason: string;
-    confidence?: number;
-  } | null;
+  support: SupportResult;
   model: DecisionResult;
 };
 
@@ -42,7 +36,7 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     bars,
   });
 
-  const support = getSupportData(code);
+  const support = await getSupport(code, quote.price);
 
   const model = runDecisionJson({
     code: quote.symbol,
@@ -59,25 +53,17 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     point21State: point21.point21State,
     point21Reason: point21.point21Reason,
 
-    supportPrice: support?.supportPrice || 0,
-    supportDays: support?.supportDays || 0,
-    structureBroken: Boolean(support?.structureBroken),
-    supportReason: String(support?.reason || ""),
+    supportPrice: support.supportPrice,
+    supportDays: support.supportDays,
+    structureBroken: support.structureBroken,
+    supportReason: support.reason,
   });
 
   return {
     quote,
     bars,
     point21,
-    support: support
-      ? {
-          supportPrice: Number(support.supportPrice || 0),
-          supportDays: Number(support.supportDays || 0),
-          structureBroken: Boolean(support.structureBroken),
-          supportReason: String(support.reason || ""),
-          confidence: Number((support as any)?.confidence || 0),
-        }
-      : null,
+    support,
     model,
   };
 }

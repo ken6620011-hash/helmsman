@@ -1,8 +1,11 @@
+import { getKbars, type KBar } from "./marketDataEngine";
+import { getSupportData } from "./supportCacheEngine";
+
 export type SupportInputBar = {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
+  open?: number;
+  high?: number;
+  low?: number;
+  close?: number;
 };
 
 export type SupportResult = {
@@ -10,8 +13,8 @@ export type SupportResult = {
   supportDays: number;
   structureBroken: boolean;
   confidence: number;
-  sourceLowCount: number;
   reason: string;
+  source: string;
 };
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -23,22 +26,11 @@ function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
-function empty(reason: string): SupportResult {
-  return {
-    supportPrice: 0,
-    supportDays: 0,
-    structureBroken: false,
-    confidence: 0,
-    sourceLowCount: 0,
-    reason,
-  };
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function normalizeBars(bars: SupportInputBar[]): SupportInputBar[] {
+function normalizeBars(bars: SupportInputBar[]): Required<SupportInputBar>[] {
   if (!Array.isArray(bars)) return [];
 
   return bars
@@ -48,102 +40,25 @@ function normalizeBars(bars: SupportInputBar[]): SupportInputBar[] {
       low: safeNumber(bar?.low, 0),
       close: safeNumber(bar?.close, 0),
     }))
-    .filter((bar) => bar.low > 0 && bar.close > 0);
+    .filter((bar) => bar.high > 0 && bar.low > 0 && bar.close > 0);
 }
 
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  if (sorted.length === 1) return sorted[0];
+function percentile(sortedAsc: number[], p: number): number {
+  if (!sortedAsc.length) return 0;
+  if (sortedAsc.length === 1) return sortedAsc[0];
 
-  const idx = (sorted.length - 1) * p;
-  const lower = Math.floor(idx);
-  const upper = Math.ceil(idx);
+  const index = (sortedAsc.length - 1) * p;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
 
-  if (lower === upper) return sorted[lower];
+  if (lower === upper) return sortedAsc[lower];
 
-  const weight = idx - lower;
-  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+  const weight = index - lower;
+  return sortedAsc[lower] * (1 - weight) + sortedAsc[upper] * weight;
 }
 
 function calcTolerance(price: number): number {
-  return price * 0.015; // 1.5%
-}
-
-function detectSupportPrice(recent: SupportInputBar[]): number {
-  const lows = recent
-    .map((bar) => safeNumber(bar.low, 0))
-    .filter((v) => v > 0)
-    .sort((a, b) => a - b);
-
-  if (lows.length === 0) return 0;
-  if (lows.length <= 3) return round2(lows[0]);
-
-  // 放寬：直接取低點群 25% 分位，避免過度嚴格要求重複觸底
-  const p25 = percentile(lows, 0.25);
-  return round2(p25);
-}
-
-function countSupportDays(recent: SupportInputBar[], supportPrice: number): number {
-  if (supportPrice <= 0) return 0;
-
-  const tolerance = calcTolerance(supportPrice);
-  let count = 0;
-
-  // 從最近一天往前看，只要 low 沒明顯跌破就算守住
-  for (let i = recent.length - 1; i >= 0; i--) {
-    const low = safeNumber(recent[i].low, 0);
-    if (low >= supportPrice - tolerance) {
-      count++;
-    } else {
-      break;
-    }
-  }
-
-  return count;
-}
-
-function calcConfidence(recent: SupportInputBar[], supportPrice: number, supportDays: number): number {
-  if (supportPrice <= 0) return 0;
-
-  const tolerance = calcTolerance(supportPrice);
-
-  let nearSupportCount = 0;
-  for (const bar of recent) {
-    if (Math.abs(bar.low - supportPrice) <= tolerance) {
-      nearSupportCount++;
-    }
-  }
-
-  const score =
-    nearSupportCount * 12 +
-    supportDays * 8 +
-    Math.min(recent.length, 20);
-
-  return clamp(Math.round(score), 20, 95);
-}
-
-function buildReason(
-  supportPrice: number,
-  supportDays: number,
-  structureBroken: boolean
-): string {
-  if (supportPrice <= 0) {
-    return "尚無有效支撐資料";
-  }
-
-  if (structureBroken) {
-    return `跌破支撐 ${supportPrice}`;
-  }
-
-  if (supportDays >= 5) {
-    return `支撐 ${supportPrice} 守穩 ${supportDays} 天`;
-  }
-
-  if (supportDays >= 1) {
-    return `支撐 ${supportPrice} 初步守穩 ${supportDays} 天`;
-  }
-
-  return `支撐 ${supportPrice} 已建立`;
+  return Math.max(price * 0.015, 0.5);
 }
 
 export function calculateSupportFromBars(
@@ -153,31 +68,129 @@ export function calculateSupportFromBars(
   const normalized = normalizeBars(bars);
 
   if (normalized.length < 5) {
-    return empty("K棒不足");
+    return {
+      supportPrice: 0,
+      supportDays: 0,
+      structureBroken: false,
+      confidence: 0,
+      reason: "K棒不足",
+      source: "bars",
+    };
   }
 
-  // 只看最近 20 根，偏近況
-  const recent = normalized.slice(-20);
+  const recent = normalized.slice(-21);
+  const lows = recent
+    .map((bar) => bar.low)
+    .filter((v) => v > 0)
+    .sort((a, b) => a - b);
 
-  const supportPrice = detectSupportPrice(recent);
-  if (supportPrice <= 0) {
-    return empty("尚無有效支撐資料");
+  if (!lows.length) {
+    return {
+      supportPrice: 0,
+      supportDays: 0,
+      structureBroken: false,
+      confidence: 0,
+      reason: "尚無有效支撐資料",
+      source: "bars",
+    };
   }
 
-  const supportDays = countSupportDays(recent, supportPrice);
+  const supportPrice = round2(percentile(lows, 0.25));
+  const tolerance = calcTolerance(supportPrice);
 
-  // 放寬：只有明確跌破 1% 才算破壞
+  let supportDays = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const low = recent[i].low;
+    if (low >= supportPrice - tolerance) {
+      supportDays++;
+    } else {
+      break;
+    }
+  }
+
   const structureBroken =
     currentPrice > 0 ? currentPrice < supportPrice * 0.99 : false;
 
-  const confidence = calcConfidence(recent, supportPrice, supportDays);
+  const touchCount = recent.filter(
+    (bar) => Math.abs(bar.low - supportPrice) <= tolerance
+  ).length;
+
+  const confidence = clamp(
+    Math.round(touchCount * 12 + supportDays * 8 + Math.min(recent.length, 20)),
+    0,
+    95
+  );
+
+  let reason = "";
+  if (supportPrice <= 0) {
+    reason = "尚無有效支撐資料";
+  } else if (structureBroken) {
+    reason = `跌破支撐 ${supportPrice}`;
+  } else if (supportDays >= 5) {
+    reason = `支撐 ${supportPrice} 守穩 ${supportDays} 天`;
+  } else if (supportDays >= 1) {
+    reason = `支撐 ${supportPrice} 初步守穩 ${supportDays} 天`;
+  } else {
+    reason = `支撐 ${supportPrice} 已建立`;
+  }
 
   return {
     supportPrice,
     supportDays,
     structureBroken,
     confidence,
-    sourceLowCount: recent.length,
-    reason: buildReason(supportPrice, supportDays, structureBroken),
+    reason,
+    source: "bars",
   };
 }
+
+function mapKbarsToSupportBars(kbars: KBar[]): SupportInputBar[] {
+  return (Array.isArray(kbars) ? kbars : []).map((bar) => ({
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+  }));
+}
+
+export async function getSupport(
+  code: string,
+  currentPrice?: number
+): Promise<SupportResult> {
+  const cache = getSupportData(code);
+
+  if (cache && safeNumber(cache?.supportPrice, 0) > 0) {
+    return {
+      supportPrice: round2(safeNumber(cache.supportPrice, 0)),
+      supportDays: Math.max(0, Math.round(safeNumber(cache.supportDays, 0))),
+      structureBroken: Boolean(cache.structureBroken),
+      confidence: clamp(
+        Math.round(safeNumber((cache as any)?.confidence, 60)),
+        0,
+        100
+      ),
+      reason: String(cache.reason || ""),
+      source: "cache",
+    };
+  }
+
+  const kbars = await getKbars(code, 21);
+
+  if (!Array.isArray(kbars) || kbars.length < 5) {
+    return {
+      supportPrice: 0,
+      supportDays: 0,
+      structureBroken: false,
+      confidence: 0,
+      reason: "尚無有效支撐資料",
+      source: "fallback",
+    };
+  }
+
+  const lastClose = safeNumber(kbars[kbars.length - 1]?.close, 0);
+  const price = safeNumber(currentPrice, lastClose);
+
+  return calculateSupportFromBars(mapKbarsToSupportBars(kbars), price);
+}
+
+export default getSupport;
