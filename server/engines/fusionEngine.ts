@@ -1,34 +1,85 @@
-import { runPoint21Engine } from "./point21Engine";
+import { getQuote, getKbars, type Quote, type KBar } from "./marketDataEngine";
+import runPoint21 from "./point21Engine";
+import { getSupportData } from "./supportCacheEngine";
+import { runDecisionJson, type DecisionResult } from "./decisionEngine";
 
-export function runFusion(input: any) {
-  const { quote, bars } = input;
+export type FusionInput = {
+  code?: string;
+  symbol?: string;
+};
 
-  // ===== 防呆 =====
-  if (!bars || !Array.isArray(bars) || bars.length === 0) {
-    return {
-      ...quote,
+export type FusionResult = {
+  quote: Quote;
+  bars: KBar[];
+  point21: ReturnType<typeof runPoint21>;
+  support: {
+    supportPrice: number;
+    supportDays: number;
+    structureBroken: boolean;
+    supportReason: string;
+    confidence?: number;
+  } | null;
+  model: DecisionResult;
+};
 
-      point21Score: 0,
-      point21Value: 0,
-      diffValue: 0,
-      upperBound: quote?.price || 0,
-      point21State: "無資料",
-      point21Reason: "bars 缺失",
-    };
+function normalizeCode(input: FusionInput | string): string {
+  if (typeof input === "string") {
+    return String(input || "").trim();
   }
 
-  // ===== 核心：21點模組 =====
-  const point21 = runPoint21Engine(bars);
+  return String(input?.code || input?.symbol || "").trim();
+}
 
-  return {
-    ...quote,
+export async function runFusion(input: FusionInput | string): Promise<FusionResult> {
+  const code = normalizeCode(input);
 
-    // ===== 21點輸出 =====
+  const quote = await getQuote(code);
+  const bars = await getKbars(code, 21);
+
+  const point21 = runPoint21({
+    code,
+    price: quote.price,
+    bars,
+  });
+
+  const support = getSupportData(code);
+
+  const model = runDecisionJson({
+    code: quote.symbol,
+    name: quote.name,
+    price: quote.price,
+    change: quote.change,
+    changePercent: quote.pct,
+
     point21Score: point21.point21Score,
     point21Value: point21.point21Value,
+    simulatedPrice: point21.simulatedPrice,
     diffValue: point21.diffValue,
     upperBound: point21.upperBound,
     point21State: point21.point21State,
     point21Reason: point21.point21Reason,
+
+    supportPrice: support?.supportPrice || 0,
+    supportDays: support?.supportDays || 0,
+    structureBroken: Boolean(support?.structureBroken),
+    supportReason: String(support?.reason || ""),
+  });
+
+  return {
+    quote,
+    bars,
+    point21,
+    support: support
+      ? {
+          supportPrice: Number(support.supportPrice || 0),
+          supportDays: Number(support.supportDays || 0),
+          structureBroken: Boolean(support.structureBroken),
+          supportReason: String(support.reason || ""),
+          confidence: Number((support as any)?.confidence || 0),
+        }
+      : null,
+    model,
   };
 }
+
+export default runFusion;

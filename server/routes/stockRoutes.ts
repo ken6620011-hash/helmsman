@@ -1,12 +1,8 @@
-import { Router } from "express";
-import { getQuote } from "../engines/marketDataEngine";
-import { runDecision } from "../engines/decisionEngine";
-import {
-  buildStockOutput,
-  isValidQuote,
-} from "../services/outputService";
+import express from "express";
+import runFusion from "../engines/fusionEngine";
+import { buildStockOutput } from "../services/outputService";
 
-const router = Router();
+const router = express.Router();
 
 router.get("/:code", async (req, res) => {
   try {
@@ -15,41 +11,23 @@ router.get("/:code", async (req, res) => {
     if (!code) {
       return res.status(400).json({
         ok: false,
-        message: "股票代號空白",
+        message: "stock code is required",
       });
     }
 
-    const quote = await getQuote(code);
-
-    if (!isValidQuote(quote)) {
-      return res.json({
-        ok: false,
-        message: "資料暫時無效",
-        data: {
-          code,
-          name: String(quote?.name || code),
-          price: 0,
-          change: 0,
-          changePercent: 0,
-          action: "觀望",
-          risk: "中",
-          score: 0,
-          reason: "資料無效或尚未更新",
-        },
-      });
-    }
-
-    const decision = runDecision(quote);
-    const output = buildStockOutput(code, quote, decision);
+    const fusion = await runFusion({ code });
+    const output = buildStockOutput(code, fusion.quote, fusion.model);
 
     return res.json({
       ok: true,
       data: output,
     });
-  } catch (err: any) {
+  } catch (error: any) {
+    console.error("❌ stockRoutes error:", error);
+
     return res.status(500).json({
       ok: false,
-      message: "api stock error",
+      message: error?.message || "stock route failed",
     });
   }
 });

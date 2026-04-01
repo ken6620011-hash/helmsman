@@ -1,13 +1,8 @@
 import express from "express";
+import runFusion from "../engines/fusionEngine";
+import { buildStockOutput, buildStockReplyText, buildScannerText } from "../services/outputService";
 import { replyText } from "../services/lineReplyService";
-import { getQuote } from "../engines/marketDataEngine";
-import { runDecision } from "../engines/decisionEngine";
-import {
-  buildStockOutput,
-  buildStockReplyText,
-  buildScannerText,
-} from "../services/outputService";
-import { runScanner } from "../engines/scannerEngine";
+import { SCAN_SYMBOLS } from "../engines/marketDataEngine";
 
 const router = express.Router();
 
@@ -17,7 +12,8 @@ router.post("/", async (req, res) => {
     console.log("LINE BODY:", JSON.stringify(req.body, null, 2));
 
     const events = Array.isArray(req.body?.events) ? req.body.events : [];
-    if (events.length === 0) {
+
+    if (!events.length) {
       return res.sendStatus(200);
     }
 
@@ -40,33 +36,33 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        const quote = await getQuote(code);
-        const decision = await runDecision(quote);
-        const output = buildStockOutput(code, quote, decision);
+        const fusion = await runFusion({ code });
+        const output = buildStockOutput(code, fusion.quote, fusion.model);
+        const text = "[WEBHOOK-V2]\n" + buildStockReplyText(output);
 
-        console.log("✅ NEW WEBHOOK OUTPUT:", output);
-
-        const text =
-          "[WEBHOOK-V2]\n" +
-          buildStockReplyText(output);
+        console.log("LINE STOCK:", output);
 
         await replyText(replyToken, text);
         continue;
       }
 
       if (userText === "掃描") {
-        const rows = await runScanner();
-        const text =
-          "[WEBHOOK-V2]\n" +
-          buildScannerText(rows);
+        const rows: any[] = [];
 
-        console.log("✅ NEW WEBHOOK SCANNER:", rows);
+        for (const code of SCAN_SYMBOLS) {
+          const fusion = await runFusion({ code });
+          const output = buildStockOutput(code, fusion.quote, fusion.model);
+          rows.push(output);
+        }
 
+        rows.sort((a, b) => Number(b.finalScore ?? b.score ?? 0) - Number(a.finalScore ?? a.score ?? 0));
+
+        const text = "[WEBHOOK-V2]\n" + buildScannerText(rows);
         await replyText(replyToken, text);
         continue;
       }
 
-      await replyText(replyToken, "[WEBHOOK-V2]\n指令錯誤，請輸入：查XXXX 或 掃描");
+      await replyText(replyToken, "指令錯誤，請輸入：查XXXX 或 掃描");
     }
 
     return res.sendStatus(200);
