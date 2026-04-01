@@ -1,70 +1,34 @@
-import { getQuote, type Quote, type KBar } from "./marketDataEngine";
-import { runDecision } from "./decisionEngine";
-import { getSupportData } from "./supportCacheEngine";
+import { runPoint21Engine } from "./point21Engine";
 
-export type FusionInput = {
-  code?: string;
-  symbol?: string;
-};
+export function runFusion(input: any) {
+  const { quote, bars } = input;
 
-export type FusionResult = {
-  quote: Quote;
-  model: ReturnType<typeof runDecision>;
-  bars: KBar[];
-  extra: {
-    supportPrice: number;
-    supportDays: number;
-    structureBroken: boolean;
-    supportReason: string;
-    trailingStopActive: boolean;
-    trailingStopRule: string;
-    supportConfidence?: number;
-  };
-};
+  // ===== 防呆 =====
+  if (!bars || !Array.isArray(bars) || bars.length === 0) {
+    return {
+      ...quote,
 
-function normalizeCode(input: FusionInput | string): string {
-  if (typeof input === "string") {
-    return String(input || "").trim();
+      point21Score: 0,
+      point21Value: 0,
+      diffValue: 0,
+      upperBound: quote?.price || 0,
+      point21State: "無資料",
+      point21Reason: "bars 缺失",
+    };
   }
 
-  return String(input?.code || input?.symbol || "").trim();
-}
-
-export async function runFusion(input: FusionInput | string): Promise<FusionResult> {
-  const code = normalizeCode(input);
-  const quote = await getQuote(code);
-
-  const support = getSupportData(code);
-
-  const model = runDecision({
-    code,
-    name: quote?.name,
-    price: quote?.price,
-    change: quote?.change,
-    pct: quote?.pct,
-    risk: "中",
-    score: 0,
-    breakout: 0,
-    reason: quote?.error || "",
-    supportPrice: support?.supportPrice || 0,
-    supportDays: support?.supportDays || 0,
-    structureBroken: Boolean(support?.structureBroken),
-  });
+  // ===== 核心：21點模組 =====
+  const point21 = runPoint21Engine(bars);
 
   return {
-    quote,
-    model,
-    bars: [],
-    extra: {
-      supportPrice: model.supportPrice,
-      supportDays: model.supportDays,
-      structureBroken: model.structureBroken,
-      supportReason: model.supportReason,
-      trailingStopActive: model.trailingStopActive,
-      trailingStopRule: model.trailingStopRule,
-      supportConfidence: support?.confidence || 0,
-    },
+    ...quote,
+
+    // ===== 21點輸出 =====
+    point21Score: point21.point21Score,
+    point21Value: point21.point21Value,
+    diffValue: point21.diffValue,
+    upperBound: point21.upperBound,
+    point21State: point21.point21State,
+    point21Reason: point21.point21Reason,
   };
 }
-
-export default runFusion;
