@@ -5,6 +5,7 @@ import healthRoutes from "./routes/healthRoutes";
 import stockRoutes from "./routes/stockRoutes";
 import scannerRoutes from "./routes/scannerRoutes";
 import webhookRoutes from "./routes/webhookRoutes";
+import positionRoutes from "./routes/positionRoutes";
 
 import { SCAN_SYMBOLS } from "./engines/marketDataEngine";
 import {
@@ -38,29 +39,39 @@ function buildSupportConfig() {
     enabled: envBool(process.env.AUTO_SUPPORT_ENABLED, true),
     intervalMs: envNumber(process.env.AUTO_SUPPORT_INTERVAL_MS, 5 * 60 * 1000),
     symbols: SCAN_SYMBOLS,
-    kbarDays: envNumber(process.env.SUPPORT_KBAR_DAYS, 20),
+    kbarDays: envNumber(process.env.SUPPORT_KBAR_DAYS, 21),
   };
 }
 
 app.use(express.json());
 
-// ===== Health / API / Webhook =====
+// ===== Core Routes =====
 app.use("/", healthRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/scanner", scannerRoutes);
+app.use("/api/position", positionRoutes);
 app.use("/webhook", webhookRoutes);
 
-// ===== Debug / Status =====
+// ===== Support Debug Routes =====
 app.get("/api/support/status", (_req, res) => {
-  const config = buildSupportConfig();
+  try {
+    const config = buildSupportConfig();
 
-  return res.json({
-    ok: true,
-    support: {
-      config,
-      status: getAutoSupportStatus(),
-    },
-  });
+    return res.json({
+      ok: true,
+      support: {
+        config,
+        status: getAutoSupportStatus(),
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ /api/support/status error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "support status failed",
+    });
+  }
 });
 
 app.get("/api/support/run", async (_req, res) => {
@@ -87,22 +98,19 @@ app.get("/api/support/run", async (_req, res) => {
 // ===== Boot =====
 app.listen(PORT, async () => {
   console.log(`🚀 Helmsman 已啟動：${PORT}`);
-  console.log("📦 server.ts（全面統一版）");
+  console.log("📦 server.ts（position 已掛載版）");
 
   const supportConfig = buildSupportConfig();
-
   console.log("🧠 AutoSupport Config:", supportConfig);
 
   if (supportConfig.enabled) {
     try {
-      // 先立即跑一次，避免剛啟動 cache 為空
       await runAutoSupportOnce(supportConfig);
     } catch (error) {
       console.error("❌ AutoSupport 初次更新失敗:", error);
     }
 
     try {
-      // 再啟動背景排程
       startAutoSupport(supportConfig);
     } catch (error) {
       console.error("❌ AutoSupport 排程啟動失敗:", error);

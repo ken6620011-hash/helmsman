@@ -2,6 +2,8 @@ import { getQuote, getKbars, type Quote, type KBar } from "./marketDataEngine";
 import runPoint21 from "./point21Engine";
 import { getSupport, type SupportResult } from "./supportEngine";
 import { runDecisionJson, type DecisionResult } from "./decisionEngine";
+import { getPosition, hasOpenPosition, updatePosition, type PositionSnapshot } from "./positionEngine";
+import HELMSMAN_CONFIG from "../config/helmsmanConfig";
 
 export type FusionInput = {
   code?: string;
@@ -13,6 +15,8 @@ export type FusionResult = {
   bars: KBar[];
   point21: ReturnType<typeof runPoint21>;
   support: SupportResult;
+  position: PositionSnapshot | null;
+  hasPosition: boolean;
   model: DecisionResult;
 };
 
@@ -28,7 +32,7 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
   const code = normalizeCode(input);
 
   const quote = await getQuote(code);
-  const bars = await getKbars(code, 21);
+  const bars = await getKbars(code, HELMSMAN_CONFIG.support.lookbackBars);
 
   const point21 = runPoint21({
     code,
@@ -37,6 +41,22 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
   });
 
   const support = await getSupport(code, quote.price);
+
+  const currentlyHasPosition = hasOpenPosition(code);
+
+  let position: PositionSnapshot | null = null;
+
+  if (currentlyHasPosition) {
+    position = updatePosition({
+      code,
+      currentPrice: quote.price,
+    });
+  } else {
+    position = getPosition(code);
+  }
+
+  const entryPrice = position?.entryPrice ?? 0;
+  const highestPriceSinceEntry = position?.highestPriceSinceEntry ?? 0;
 
   const model = runDecisionJson({
     code: quote.symbol,
@@ -57,6 +77,10 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     supportDays: support.supportDays,
     structureBroken: support.structureBroken,
     supportReason: support.reason,
+
+    entryPrice,
+    highestPriceSinceEntry,
+    trailingStopEnabled: currentlyHasPosition,
   });
 
   return {
@@ -64,6 +88,8 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     bars,
     point21,
     support,
+    position,
+    hasPosition: currentlyHasPosition,
     model,
   };
 }

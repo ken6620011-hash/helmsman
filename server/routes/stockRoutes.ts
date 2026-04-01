@@ -1,6 +1,10 @@
 import express from "express";
 import runFusion from "../engines/fusionEngine";
-import { buildStockOutput } from "../services/outputService";
+import {
+  buildStockOutput,
+  buildStockReplyText,
+  isValidQuote,
+} from "../services/outputService";
 
 const router = express.Router();
 
@@ -11,23 +15,42 @@ router.get("/:code", async (req, res) => {
     if (!code) {
       return res.status(400).json({
         ok: false,
-        message: "stock code is required",
+        error: "stock code is required",
       });
     }
 
     const fusion = await runFusion({ code });
-    const output = buildStockOutput(code, fusion.quote, fusion.model);
+
+    if (!isValidQuote(fusion.quote)) {
+      return res.status(404).json({
+        ok: false,
+        error: "quote not found",
+        code,
+        data: fusion.quote,
+      });
+    }
+
+    const output = buildStockOutput(
+      code,
+      fusion.quote,
+      fusion.model,
+      fusion.position,
+      fusion.hasPosition
+    );
+
+    const report = buildStockReplyText(output);
 
     return res.json({
       ok: true,
       data: output,
+      report,
     });
   } catch (error: any) {
-    console.error("❌ stockRoutes error:", error);
+    console.error("❌ stock route error:", error);
 
     return res.status(500).json({
       ok: false,
-      message: error?.message || "stock route failed",
+      error: error?.message || "internal server error",
     });
   }
 });

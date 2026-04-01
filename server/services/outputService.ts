@@ -30,8 +30,26 @@ export type StockOutput = {
 
   marketState?: string;
 
+  stopLossPrice?: number;
   trailingStopActive?: boolean;
+  trailingStopPrice?: number;
   trailingStopRule?: string;
+
+  structureRisk?: string;
+  timeValidation?: string;
+  priceStopStatus?: string;
+  canHold?: boolean;
+  shouldExit?: boolean;
+  riskReason?: string;
+
+  hasPosition?: boolean;
+  positionStatus?: string;
+  entryPrice?: number;
+  highestPriceSinceEntry?: number;
+  lowestPriceSinceEntry?: number;
+  quantity?: number;
+  pnlAmount?: number;
+  pnlPercent?: number;
 
   reason: string;
 };
@@ -125,13 +143,73 @@ function buildSupportLines(d: StockOutput): string[] {
   return lines;
 }
 
+function buildRiskLines(d: StockOutput): string[] {
+  const lines: string[] = [];
+
+  if (d.structureRisk) {
+    lines.push(`結構風控：${d.structureRisk}`);
+  }
+
+  if (d.timeValidation) {
+    lines.push(`時間驗證：${d.timeValidation}`);
+  }
+
+  if (d.priceStopStatus) {
+    lines.push(`停損狀態：${d.priceStopStatus}`);
+  }
+
+  if (typeof d.canHold === "boolean") {
+    lines.push(`可續抱：${d.canHold ? "是" : "否"}`);
+  }
+
+  if (typeof d.shouldExit === "boolean") {
+    lines.push(`應出場：${d.shouldExit ? "是" : "否"}`);
+  }
+
+  return lines;
+}
+
+function buildPositionLines(d: StockOutput): string[] {
+  const lines: string[] = [];
+
+  if (!d.hasPosition) {
+    lines.push("持倉：無");
+    return lines;
+  }
+
+  lines.push(`持倉：有${d.positionStatus ? `（${d.positionStatus}）` : ""}`);
+
+  if (safeNumber(d.entryPrice, 0) > 0) {
+    lines.push(`進場價：${fmtNumber(d.entryPrice)}`);
+  }
+
+  if (safeNumber(d.highestPriceSinceEntry, 0) > 0) {
+    lines.push(`進場後最高：${fmtNumber(d.highestPriceSinceEntry)}`);
+  }
+
+  if (safeNumber(d.lowestPriceSinceEntry, 0) > 0) {
+    lines.push(`進場後最低：${fmtNumber(d.lowestPriceSinceEntry)}`);
+  }
+
+  if (safeNumber(d.quantity, 0) > 0) {
+    lines.push(`數量：${fmtNumber(d.quantity)}`);
+  }
+
+  if (typeof d.pnlAmount === "number" || typeof d.pnlPercent === "number") {
+    lines.push(`損益：${fmtNumber(d.pnlAmount)} / ${fmtPct(d.pnlPercent)}`);
+  }
+
+  return lines;
+}
+
 function buildTrailingStopLines(d: StockOutput): string[] {
   const lines: string[] = [];
 
-  const supportPrice = safeNumber(d.supportPrice, 0);
+  const stopLossPrice = safeNumber(d.stopLossPrice ?? d.supportPrice, 0);
+  const trailingStopPrice = safeNumber(d.trailingStopPrice, 0);
 
-  if (supportPrice > 0) {
-    lines.push(`停損：${fmtNumber(supportPrice)}（支撐）`);
+  if (stopLossPrice > 0) {
+    lines.push(`停損：${fmtNumber(stopLossPrice)}`);
   } else {
     lines.push("停損：未定義");
   }
@@ -142,12 +220,29 @@ function buildTrailingStopLines(d: StockOutput): string[] {
     lines.push(d.trailingStopActive ? "移動停損：已啟動" : "移動停損：未啟動");
   }
 
+  if (trailingStopPrice > 0) {
+    lines.push(`移動停損價：${fmtNumber(trailingStopPrice)}`);
+  }
+
   return lines;
 }
 
 function buildReasonText(d: StockOutput): string {
+  const parts: string[] = [];
+
   if (d.reason && String(d.reason).trim()) {
-    return String(d.reason).trim();
+    parts.push(String(d.reason).trim());
+  }
+
+  if (d.riskReason && String(d.riskReason).trim()) {
+    const riskReason = String(d.riskReason).trim();
+    if (!parts.includes(riskReason)) {
+      parts.push(riskReason);
+    }
+  }
+
+  if (parts.length > 0) {
+    return parts.join("；");
   }
 
   const point21Value = Math.round(safeNumber(d.point21Value, 0));
@@ -161,8 +256,15 @@ function buildReasonText(d: StockOutput): string {
 export function buildStockOutput(
   code: string,
   quote: any,
-  decision: any
+  decision: any,
+  position?: any,
+  hasPosition?: boolean
 ): StockOutput {
+  const resolvedHasPosition =
+    typeof hasPosition === "boolean"
+      ? hasPosition
+      : !!position && String(position?.status || "").trim() === "OPEN";
+
   return {
     code: String(quote?.symbol || quote?.code || code),
     name: String(quote?.name || code),
@@ -194,8 +296,27 @@ export function buildStockOutput(
     supportReason: String(decision?.supportReason || ""),
 
     marketState: String(decision?.marketState || ""),
+
+    stopLossPrice: safeNumber(decision?.stopLossPrice, 0),
     trailingStopActive: Boolean(decision?.trailingStopActive),
+    trailingStopPrice: safeNumber(decision?.trailingStopPrice, 0),
     trailingStopRule: String(decision?.trailingStopRule || ""),
+
+    structureRisk: String(decision?.structureRisk || ""),
+    timeValidation: String(decision?.timeValidation || ""),
+    priceStopStatus: String(decision?.priceStopStatus || ""),
+    canHold: typeof decision?.canHold === "boolean" ? decision.canHold : undefined,
+    shouldExit: typeof decision?.shouldExit === "boolean" ? decision.shouldExit : undefined,
+    riskReason: String(decision?.riskReason || ""),
+
+    hasPosition: resolvedHasPosition,
+    positionStatus: String(position?.status || ""),
+    entryPrice: safeNumber(position?.entryPrice, 0),
+    highestPriceSinceEntry: safeNumber(position?.highestPriceSinceEntry, 0),
+    lowestPriceSinceEntry: safeNumber(position?.lowestPriceSinceEntry, 0),
+    quantity: safeNumber(position?.quantity, 0),
+    pnlAmount: safeNumber(position?.pnlAmount, 0),
+    pnlPercent: safeNumber(position?.pnlPercent, 0),
 
     reason: buildReasonText({
       code: String(quote?.symbol || code),
@@ -204,8 +325,10 @@ export function buildStockOutput(
       change: safeNumber(quote?.change, 0),
       changePercent: safeNumber(quote?.changePercent ?? quote?.pct, 0),
       action: String(decision?.action || "觀望"),
+      finalAction: String(decision?.finalAction || decision?.action || "觀望"),
       risk: String(decision?.risk || "中"),
       score: safeNumber(decision?.score, 0),
+      finalScore: safeNumber(decision?.finalScore ?? decision?.score, 0),
       point21Value: pickPoint21Value(decision),
       simulatedPrice: pickSimulatedPrice(decision, quote),
       diffValue: pickDiffValue(decision),
@@ -213,6 +336,7 @@ export function buildStockOutput(
       supportPrice: safeNumber(decision?.supportPrice, 0),
       supportDays: Math.max(0, Math.round(safeNumber(decision?.supportDays, 0))),
       structureBroken: Boolean(decision?.structureBroken),
+      riskReason: String(decision?.riskReason || ""),
       reason: String(decision?.reason || ""),
     }),
   };
@@ -237,8 +361,16 @@ export function buildStockReplyText(d: StockOutput): string {
   lines.push(`Score：${fmtNumber(d.finalScore ?? d.score)}`);
   lines.push("");
 
+  lines.push("📌 持倉");
+  lines.push(...buildPositionLines(d));
+  lines.push("");
+
   lines.push("📌 風控");
   lines.push(...buildTrailingStopLines(d));
+  const riskLines = buildRiskLines(d);
+  if (riskLines.length > 0) {
+    lines.push(...riskLines);
+  }
   lines.push("");
 
   lines.push("📌 判斷");
@@ -267,10 +399,14 @@ export function buildScannerText(rows: any[]): string {
     supportPrice: safeNumber(row?.supportPrice, 0),
     supportDays: safeNumber(row?.supportDays, 0),
     structureBroken: Boolean(row?.structureBroken),
+    hasPosition: Boolean(row?.hasPosition),
     reason: String(row?.reason || ""),
   }));
 
-  normalized.sort((a, b) => safeNumber(b.finalScore ?? b.score, 0) - safeNumber(a.finalScore ?? a.score, 0));
+  normalized.sort(
+    (a, b) =>
+      safeNumber(b.finalScore ?? b.score, 0) - safeNumber(a.finalScore ?? a.score, 0)
+  );
 
   const lines: string[] = [];
   lines.push("🔥 今日機會股 TOP 5");
@@ -280,8 +416,13 @@ export function buildScannerText(rows: any[]): string {
     lines.push(
       `${index + 1}. ${row.code} ${row.name} | Score:${fmtNumber(row.finalScore ?? row.score)}`
     );
-    lines.push(`${String(row.finalAction || row.action || "觀望")} | 風險：${String(row.risk || "中")}`);
-    lines.push(`漲跌幅：${fmtPct(row.changePercent)} | 21點：${Math.round(safeNumber(row.point21Value, 0))}/21`);
+    lines.push(
+      `${String(row.finalAction || row.action || "觀望")} | 風險：${String(row.risk || "中")}`
+    );
+    lines.push(
+      `漲跌幅：${fmtPct(row.changePercent)} | 21點：${Math.round(safeNumber(row.point21Value, 0))}/21`
+    );
+    lines.push(`持倉：${row.hasPosition ? "有" : "無"}`);
 
     if (safeNumber(row.supportPrice, 0) > 0) {
       const supportDays = Math.max(0, Math.round(safeNumber(row.supportDays, 0)));
@@ -310,6 +451,7 @@ export function buildAlertTestText(rows: any[]): string {
     risk: String(row?.risk || "中"),
     point21Value: safeNumber(row?.point21Value, 0),
     supportPrice: safeNumber(row?.supportPrice, 0),
+    hasPosition: Boolean(row?.hasPosition),
   }));
 
   const alertRows = normalized.filter((x) => x.score >= 60);
@@ -327,7 +469,10 @@ export function buildAlertTestText(rows: any[]): string {
 
   alertRows.forEach((x, i) => {
     lines.push(`${i + 1}. ${x.code} ${x.name} | Score:${fmtNumber(x.score)} | ${x.action}`);
-    lines.push(`   漲跌幅：${fmtPct(x.changePercent)} | 風險：${x.risk} | 21點：${Math.round(x.point21Value)}/21`);
+    lines.push(
+      `   漲跌幅：${fmtPct(x.changePercent)} | 風險：${x.risk} | 21點：${Math.round(x.point21Value)}/21`
+    );
+    lines.push(`   持倉：${x.hasPosition ? "有" : "無"}`);
     if (x.supportPrice > 0) {
       lines.push(`   支撐：${fmtNumber(x.supportPrice)}`);
     }

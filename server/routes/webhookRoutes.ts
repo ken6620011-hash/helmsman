@@ -36,7 +36,15 @@ router.post("/", async (req, res) => {
         }
 
         const fusion = await runFusion({ code });
-        const output = buildStockOutput(code, fusion.quote, fusion.model);
+
+        const output = buildStockOutput(
+          code,
+          fusion.quote,
+          fusion.model,
+          fusion.position,
+          fusion.hasPosition
+        );
+
         const text = "[WEBHOOK-V2]\n" + buildStockReplyText(output);
 
         await replyText(replyToken, text);
@@ -48,12 +56,22 @@ router.post("/", async (req, res) => {
 
         for (const code of SCAN_SYMBOLS) {
           const fusion = await runFusion({ code });
-          const output = buildStockOutput(code, fusion.quote, fusion.model);
+
+          const output = buildStockOutput(
+            code,
+            fusion.quote,
+            fusion.model,
+            fusion.position,
+            fusion.hasPosition
+          );
+
           rows.push(output);
         }
 
         rows.sort(
-          (a, b) => Number(b.finalScore ?? b.score ?? 0) - Number(a.finalScore ?? a.score ?? 0)
+          (a, b) =>
+            Number(b.finalScore ?? b.score ?? 0) -
+            Number(a.finalScore ?? a.score ?? 0)
         );
 
         const text = "[WEBHOOK-V2]\n" + buildScannerText(rows);
