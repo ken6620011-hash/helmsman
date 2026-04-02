@@ -254,6 +254,14 @@ export function runDecisionJson(input: DecisionInput): DecisionResult {
   });
 
   const finalAction = applyMarketGate(baseAction, marketState, risk);
+
+// ===== 🔥 驗證用（一定會印）=====
+console.log("🔥 DECISION GATE ACTIVE", {
+  code,
+  marketState,
+  baseAction,
+  finalAction,
+});
   const gatedReason = buildGatedReason(marketState, baseAction, finalAction);
 
   const parts: string[] = [];
