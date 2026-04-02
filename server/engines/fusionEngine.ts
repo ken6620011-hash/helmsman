@@ -2,7 +2,13 @@ import { getQuote, getKbars, type Quote, type KBar } from "./marketDataEngine";
 import runPoint21 from "./point21Engine";
 import { getSupport, type SupportResult } from "./supportEngine";
 import { runDecisionJson, type DecisionResult } from "./decisionEngine";
-import { getPosition, hasOpenPosition, updatePosition, type PositionSnapshot } from "./positionEngine";
+import {
+  getPosition,
+  hasOpenPosition,
+  updatePosition,
+  type PositionSnapshot,
+} from "./positionEngine";
+import { getMarketState, type MarketStateResult } from "./marketStateEngine";
 import HELMSMAN_CONFIG from "../config/helmsmanConfig";
 
 export type FusionInput = {
@@ -17,6 +23,7 @@ export type FusionResult = {
   support: SupportResult;
   position: PositionSnapshot | null;
   hasPosition: boolean;
+  market: MarketStateResult;
   model: DecisionResult;
 };
 
@@ -58,6 +65,13 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
   const entryPrice = position?.entryPrice ?? 0;
   const highestPriceSinceEntry = position?.highestPriceSinceEntry ?? 0;
 
+  /**
+   * 目前先用單股當下狀態作為 marketState 代理輸入，
+   * 先把市場總閘門正式接進主鏈，不破壞既有可跑版本。
+   * 後續若接入大盤 / 美股 / 多檔市場籃子，再把這裡升級成真正市場級輸入。
+   */
+  const market = getMarketState([quote]);
+
   const model = runDecisionJson({
     code: quote.symbol,
     name: quote.name,
@@ -81,6 +95,8 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     entryPrice,
     highestPriceSinceEntry,
     trailingStopEnabled: currentlyHasPosition,
+
+    marketState: market.label,
   });
 
   return {
@@ -90,6 +106,7 @@ export async function runFusion(input: FusionInput | string): Promise<FusionResu
     support,
     position,
     hasPosition: currentlyHasPosition,
+    market,
     model,
   };
 }
