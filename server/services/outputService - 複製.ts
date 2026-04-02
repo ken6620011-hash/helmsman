@@ -59,10 +59,6 @@ function safeNumber(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function safeText(v: unknown): string {
-  return String(v ?? "").trim();
-}
-
 export function isValidQuote(q: any): boolean {
   return (
     !!q &&
@@ -218,7 +214,7 @@ function buildTrailingStopLines(d: StockOutput): string[] {
     lines.push("停損：未定義");
   }
 
-  if (d.trailingStopRule && safeText(d.trailingStopRule)) {
+  if (d.trailingStopRule && String(d.trailingStopRule).trim()) {
     lines.push(String(d.trailingStopRule));
   } else {
     lines.push(d.trailingStopActive ? "移動停損：已啟動" : "移動停損：未啟動");
@@ -231,48 +227,30 @@ function buildTrailingStopLines(d: StockOutput): string[] {
   return lines;
 }
 
-function buildFallbackReason(d: StockOutput): string {
+function buildReasonText(d: StockOutput): string {
+  const parts: string[] = [];
+
+  if (d.reason && String(d.reason).trim()) {
+    parts.push(String(d.reason).trim());
+  }
+
+  if (d.riskReason && String(d.riskReason).trim()) {
+    const riskReason = String(d.riskReason).trim();
+    if (!parts.includes(riskReason)) {
+      parts.push(riskReason);
+    }
+  }
+
+  if (parts.length > 0) {
+    return parts.join("；");
+  }
+
   const point21Value = Math.round(safeNumber(d.point21Value, 0));
   const simulatedPrice = safeNumber(d.simulatedPrice, d.price);
   const diffValue = safeNumber(d.diffValue, 0);
   const upperBound = safeNumber(d.upperBound, d.price);
 
-  const parts: string[] = [];
-  parts.push(`21點數（${point21Value}/21）`);
-  parts.push(`平台 ${simulatedPrice}`);
-  parts.push(`差值 ${diffValue}`);
-  parts.push(`上緣 ${upperBound}`);
-
-  if (safeNumber(d.supportPrice, 0) > 0) {
-    const supportDays = Math.max(0, Math.round(safeNumber(d.supportDays, 0)));
-    if (d.structureBroken) {
-      parts.push(`跌破支撐 ${fmtNumber(d.supportPrice)}`);
-    } else if (supportDays > 0) {
-      parts.push(`支撐 ${fmtNumber(d.supportPrice)} 守穩 ${supportDays} 天`);
-    } else {
-      parts.push(`支撐 ${fmtNumber(d.supportPrice)}`);
-    }
-  }
-
-  return parts.join("，");
-}
-
-function buildReasonText(d: StockOutput): string {
-  const main = safeText(d.reason);
-  const risk = safeText(d.riskReason);
-
-  if (main) {
-    if (risk && !main.includes(risk)) {
-      return `${main}；${risk}`;
-    }
-    return main;
-  }
-
-  if (risk) {
-    return risk;
-  }
-
-  return buildFallbackReason(d);
+  return `21點數偏弱（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
 }
 
 export function buildStockOutput(
@@ -287,7 +265,7 @@ export function buildStockOutput(
       ? hasPosition
       : !!position && String(position?.status || "").trim() === "OPEN";
 
-  const draft: StockOutput = {
+  return {
     code: String(quote?.symbol || quote?.code || code),
     name: String(quote?.name || code),
 
@@ -340,12 +318,27 @@ export function buildStockOutput(
     pnlAmount: safeNumber(position?.pnlAmount, 0),
     pnlPercent: safeNumber(position?.pnlPercent, 0),
 
-    reason: safeText(decision?.reason),
-  };
-
-  return {
-    ...draft,
-    reason: buildReasonText(draft),
+    reason: buildReasonText({
+      code: String(quote?.symbol || code),
+      name: String(quote?.name || code),
+      price: safeNumber(quote?.price, 0),
+      change: safeNumber(quote?.change, 0),
+      changePercent: safeNumber(quote?.changePercent ?? quote?.pct, 0),
+      action: String(decision?.action || "觀望"),
+      finalAction: String(decision?.finalAction || decision?.action || "觀望"),
+      risk: String(decision?.risk || "中"),
+      score: safeNumber(decision?.score, 0),
+      finalScore: safeNumber(decision?.finalScore ?? decision?.score, 0),
+      point21Value: pickPoint21Value(decision),
+      simulatedPrice: pickSimulatedPrice(decision, quote),
+      diffValue: pickDiffValue(decision),
+      upperBound: pickUpperBound(decision, quote),
+      supportPrice: safeNumber(decision?.supportPrice, 0),
+      supportDays: Math.max(0, Math.round(safeNumber(decision?.supportDays, 0))),
+      structureBroken: Boolean(decision?.structureBroken),
+      riskReason: String(decision?.riskReason || ""),
+      reason: String(decision?.reason || ""),
+    }),
   };
 }
 
@@ -407,7 +400,7 @@ export function buildScannerText(rows: any[]): string {
     supportDays: safeNumber(row?.supportDays, 0),
     structureBroken: Boolean(row?.structureBroken),
     hasPosition: Boolean(row?.hasPosition),
-    reason: safeText(row?.reason),
+    reason: String(row?.reason || ""),
   }));
 
   normalized.sort(
