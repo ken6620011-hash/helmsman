@@ -116,11 +116,13 @@ function buildPoint21Reason(
   const ext = safeText(external);
   if (ext) return ext;
 
-  if (point21Value >= 18)
+  if (point21Value >= 18) {
     return `21點數偏強（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
+  }
 
-  if (point21Value >= 8)
+  if (point21Value >= 8) {
     return `21點數中性（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
+  }
 
   return `21點數偏弱（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
 }
@@ -145,11 +147,65 @@ function calcScore(point21Value: number): number {
   return round2((clamp(point21Value, 0, 21) / 21) * 100);
 }
 
-function resolveAction(point21Value: number, structureBroken: boolean): string {
+function resolveBaseAction(point21Value: number, structureBroken: boolean): string {
   if (structureBroken) return "防守";
   if (point21Value >= 18) return "進攻";
   if (point21Value >= 8) return "觀望";
   return "防守";
+}
+
+function normalizeMarketState(state: string): string {
+  const s = safeText(state);
+
+  if (s === "ATTACK" || s === "攻擊") return "攻擊";
+  if (s === "ROTATION" || s === "輪動") return "輪動";
+  if (s === "DEFENSE" || s === "防守") return "防守";
+  if (s === "CORRECTION" || s === "修正") return "修正";
+
+  return s;
+}
+
+function applyMarketGate(baseAction: string, marketState: string, risk: RiskEngineResult): string {
+  const ms = normalizeMarketState(marketState);
+
+  if (risk.shouldExit) return "防守";
+
+  if (ms === "修正") {
+    return "防守";
+  }
+
+  if (ms === "防守") {
+    if (baseAction === "進攻") return "觀望";
+    return baseAction;
+  }
+
+  if (ms === "輪動") {
+    if (baseAction === "進攻" && risk.riskLevel === "高") return "觀望";
+    return baseAction;
+  }
+
+  return baseAction;
+}
+
+function buildGatedReason(marketState: string, baseAction: string, finalAction: string): string {
+  const ms = normalizeMarketState(marketState);
+
+  if (!ms) return "";
+  if (baseAction === finalAction) return "";
+
+  if (ms === "修正") {
+    return "市場狀態＝修正，進攻降級為防守";
+  }
+
+  if (ms === "防守" && baseAction === "進攻" && finalAction === "觀望") {
+    return "市場狀態＝防守，進攻降級為觀望";
+  }
+
+  if (ms === "輪動" && baseAction === "進攻" && finalAction === "觀望") {
+    return "市場狀態＝輪動，進攻降級為觀望";
+  }
+
+  return "";
 }
 
 export function runDecisionJson(input: DecisionInput): DecisionResult {
@@ -181,12 +237,13 @@ export function runDecisionJson(input: DecisionInput): DecisionResult {
     input.supportReason
   );
 
-  const action = resolveAction(point21Value, structureBroken);
+  const baseAction = resolveBaseAction(point21Value, structureBroken);
+  const marketState = normalizeMarketState(input.marketState || "");
 
   const risk: RiskEngineResult = runRiskEngine({
     code,
     price,
-    action,
+    action: baseAction,
     supportPrice,
     supportDays,
     structureBroken,
@@ -196,27 +253,32 @@ export function runDecisionJson(input: DecisionInput): DecisionResult {
     simulatedPrice,
   });
 
+  const finalAction = applyMarketGate(baseAction, marketState, risk);
+  const gatedReason = buildGatedReason(marketState, baseAction, finalAction);
+
   const parts: string[] = [];
   pushUniqueSemantic(parts, point21Reason);
   pushUniqueSemantic(parts, supportReason);
   pushUniqueSemantic(parts, risk.riskReason);
+  pushUniqueSemantic(parts, gatedReason);
 
   const reason = parts.join("；");
+  const score = calcScore(point21Value);
 
   return {
     code,
     name,
 
-    action,
-    finalAction: risk.shouldExit ? "防守" : action,
+    action: baseAction,
+    finalAction,
     risk: risk.riskLevel,
 
-    score: calcScore(point21Value),
-    finalScore: calcScore(point21Value),
-    rawScore: calcScore(point21Value),
+    score,
+    finalScore: score,
+    rawScore: score,
     breakout: diffValue,
 
-    point21Score: calcScore(point21Value),
+    point21Score: score,
     point21Value,
     simulatedPrice,
     diffValue,
@@ -241,7 +303,7 @@ export function runDecisionJson(input: DecisionInput): DecisionResult {
     shouldExit: risk.shouldExit,
     riskReason: risk.riskReason,
 
-    marketState: safeText(input.marketState),
+    marketState,
     reason,
   };
 }
