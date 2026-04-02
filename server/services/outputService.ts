@@ -81,6 +81,18 @@ function fmtPct(v: unknown): string {
   return `${n >= 0 ? "+" : ""}${n}%`;
 }
 
+function normalizeMarketStateLabel(v: unknown): string {
+  const text = safeText(v);
+
+  if (!text) return "";
+  if (text === "ATTACK") return "攻擊";
+  if (text === "ROTATION") return "輪動";
+  if (text === "DEFENSE") return "防守";
+  if (text === "CORRECTION") return "修正";
+
+  return text;
+}
+
 function pickPoint21Value(decision: any): number {
   return safeNumber(
     decision?.point21Value ??
@@ -317,7 +329,7 @@ export function buildStockOutput(
     structureBroken: Boolean(decision?.structureBroken),
     supportReason: String(decision?.supportReason || ""),
 
-    marketState: String(decision?.marketState || ""),
+    marketState: normalizeMarketStateLabel(decision?.marketState),
 
     stopLossPrice: safeNumber(decision?.stopLossPrice, 0),
     trailingStopActive: Boolean(decision?.trailingStopActive),
@@ -357,6 +369,12 @@ export function buildStockReplyText(d: StockOutput): string {
   lines.push(`漲跌：${fmtNumber(d.change)}`);
   lines.push(`漲跌幅：${fmtPct(d.changePercent)}`);
   lines.push("");
+
+  if (safeText(d.marketState)) {
+    lines.push("📌 市場");
+    lines.push(`狀態：${safeText(d.marketState)}`);
+    lines.push("");
+  }
 
   lines.push("📌 結構");
   lines.push(...buildSupportLines(d));
@@ -407,6 +425,7 @@ export function buildScannerText(rows: any[]): string {
     supportDays: safeNumber(row?.supportDays, 0),
     structureBroken: Boolean(row?.structureBroken),
     hasPosition: Boolean(row?.hasPosition),
+    marketState: normalizeMarketStateLabel(row?.marketState),
     reason: safeText(row?.reason),
   }));
 
@@ -429,6 +448,11 @@ export function buildScannerText(rows: any[]): string {
     lines.push(
       `漲跌幅：${fmtPct(row.changePercent)} | 21點：${Math.round(safeNumber(row.point21Value, 0))}/21`
     );
+
+    if (safeText(row.marketState)) {
+      lines.push(`市場：${safeText(row.marketState)}`);
+    }
+
     lines.push(`持倉：${row.hasPosition ? "有" : "無"}`);
 
     if (safeNumber(row.supportPrice, 0) > 0) {
@@ -459,6 +483,7 @@ export function buildAlertTestText(rows: any[]): string {
     point21Value: safeNumber(row?.point21Value, 0),
     supportPrice: safeNumber(row?.supportPrice, 0),
     hasPosition: Boolean(row?.hasPosition),
+    marketState: normalizeMarketStateLabel(row?.marketState),
   }));
 
   const alertRows = normalized.filter((x) => x.score >= 60);
@@ -479,6 +504,9 @@ export function buildAlertTestText(rows: any[]): string {
     lines.push(
       `   漲跌幅：${fmtPct(x.changePercent)} | 風險：${x.risk} | 21點：${Math.round(x.point21Value)}/21`
     );
+    if (safeText(x.marketState)) {
+      lines.push(`   市場：${safeText(x.marketState)}`);
+    }
     lines.push(`   持倉：${x.hasPosition ? "有" : "無"}`);
     if (x.supportPrice > 0) {
       lines.push(`   支撐：${fmtNumber(x.supportPrice)}`);
