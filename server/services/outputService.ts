@@ -59,15 +59,6 @@ function safeNumber(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function safeString(v: unknown, fallback = ""): string {
-  const s = String(v ?? "").trim();
-  return s || fallback;
-}
-
-function round2(v: number): number {
-  return Number(v.toFixed(2));
-}
-
 export function isValidQuote(q: any): boolean {
   return (
     !!q &&
@@ -130,75 +121,6 @@ function pickUpperBound(decision: any, quote: any): number {
   );
 }
 
-function normalizeReasonPart(part: unknown): string {
-  return safeString(part)
-    .replace(/；+/g, "；")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^；+|；+$/g, "");
-}
-
-function dedupeReasonParts(parts: unknown[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const raw of parts) {
-    const text = normalizeReasonPart(raw);
-    if (!text) continue;
-
-    const split = text
-      .split("；")
-      .map((x) => normalizeReasonPart(x))
-      .filter(Boolean);
-
-    for (const item of split) {
-      const key = item;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(item);
-    }
-  }
-
-  return out;
-}
-
-function buildBasePoint21Reason(d: StockOutput): string {
-  const point21Value = Math.round(safeNumber(d.point21Value, 0));
-  const simulatedPrice = safeNumber(d.simulatedPrice, d.price);
-  const diffValue = safeNumber(d.diffValue, 0);
-  const upperBound = safeNumber(d.upperBound, d.price);
-
-  if (point21Value >= 14) {
-    return `21點數偏強（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
-  }
-
-  if (point21Value >= 7) {
-    return `21點數中性（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
-  }
-
-  return `21點數偏弱（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
-}
-
-function buildBaseSupportReason(d: StockOutput): string {
-  const supportPrice = safeNumber(d.supportPrice, 0);
-  const supportDays = Math.max(0, Math.round(safeNumber(d.supportDays, 0)));
-  const broken = Boolean(d.structureBroken);
-
-  if (supportPrice <= 0) {
-    return "尚無有效支撐資料";
-  }
-
-  if (broken) {
-    return `跌破支撐 ${supportPrice}`;
-  }
-
-  if (supportDays > 0) {
-    return `支撐 ${supportPrice} 守穩 ${supportDays} 天`;
-  }
-
-  return `支撐 ${supportPrice}`;
-}
-
 function buildSupportLines(d: StockOutput): string[] {
   const lines: string[] = [];
 
@@ -224,16 +146,16 @@ function buildSupportLines(d: StockOutput): string[] {
 function buildRiskLines(d: StockOutput): string[] {
   const lines: string[] = [];
 
-  if (safeString(d.structureRisk)) {
-    lines.push(`結構風控：${safeString(d.structureRisk)}`);
+  if (d.structureRisk) {
+    lines.push(`結構風控：${d.structureRisk}`);
   }
 
-  if (safeString(d.timeValidation)) {
-    lines.push(`時間驗證：${safeString(d.timeValidation)}`);
+  if (d.timeValidation) {
+    lines.push(`時間驗證：${d.timeValidation}`);
   }
 
-  if (safeString(d.priceStopStatus)) {
-    lines.push(`停損狀態：${safeString(d.priceStopStatus)}`);
+  if (d.priceStopStatus) {
+    lines.push(`停損狀態：${d.priceStopStatus}`);
   }
 
   if (typeof d.canHold === "boolean") {
@@ -293,7 +215,7 @@ function buildTrailingStopLines(d: StockOutput): string[] {
   }
 
   if (d.trailingStopRule && String(d.trailingStopRule).trim()) {
-    lines.push(String(d.trailingStopRule).trim());
+    lines.push(String(d.trailingStopRule));
   } else {
     lines.push(d.trailingStopActive ? "移動停損：已啟動" : "移動停損：未啟動");
   }
@@ -306,18 +228,29 @@ function buildTrailingStopLines(d: StockOutput): string[] {
 }
 
 function buildReasonText(d: StockOutput): string {
-  const parts = dedupeReasonParts([
-    d.reason,
-    d.point21Reason || buildBasePoint21Reason(d),
-    d.supportReason || buildBaseSupportReason(d),
-    d.riskReason,
-  ]);
+  const parts: string[] = [];
+
+  if (d.reason && String(d.reason).trim()) {
+    parts.push(String(d.reason).trim());
+  }
+
+  if (d.riskReason && String(d.riskReason).trim()) {
+    const riskReason = String(d.riskReason).trim();
+    if (!parts.includes(riskReason)) {
+      parts.push(riskReason);
+    }
+  }
 
   if (parts.length > 0) {
     return parts.join("；");
   }
 
-  return buildBasePoint21Reason(d);
+  const point21Value = Math.round(safeNumber(d.point21Value, 0));
+  const simulatedPrice = safeNumber(d.simulatedPrice, d.price);
+  const diffValue = safeNumber(d.diffValue, 0);
+  const upperBound = safeNumber(d.upperBound, d.price);
+
+  return `21點數偏弱（${point21Value}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
 }
 
 export function buildStockOutput(
@@ -332,7 +265,7 @@ export function buildStockOutput(
       ? hasPosition
       : !!position && String(position?.status || "").trim() === "OPEN";
 
-  const base: StockOutput = {
+  return {
     code: String(quote?.symbol || quote?.code || code),
     name: String(quote?.name || code),
 
@@ -355,12 +288,12 @@ export function buildStockOutput(
     diffValue: pickDiffValue(decision),
     upperBound: pickUpperBound(decision, quote),
     point21State: String(decision?.point21State ?? decision?.point21?.point21State ?? ""),
-    point21Reason: "",
+    point21Reason: String(decision?.point21Reason ?? decision?.point21?.point21Reason ?? ""),
 
     supportPrice: safeNumber(decision?.supportPrice, 0),
     supportDays: Math.max(0, Math.round(safeNumber(decision?.supportDays, 0))),
     structureBroken: Boolean(decision?.structureBroken),
-    supportReason: "",
+    supportReason: String(decision?.supportReason || ""),
 
     marketState: String(decision?.marketState || ""),
 
@@ -374,7 +307,7 @@ export function buildStockOutput(
     priceStopStatus: String(decision?.priceStopStatus || ""),
     canHold: typeof decision?.canHold === "boolean" ? decision.canHold : undefined,
     shouldExit: typeof decision?.shouldExit === "boolean" ? decision.shouldExit : undefined,
-    riskReason: "",
+    riskReason: String(decision?.riskReason || ""),
 
     hasPosition: resolvedHasPosition,
     positionStatus: String(position?.status || ""),
@@ -385,36 +318,27 @@ export function buildStockOutput(
     pnlAmount: safeNumber(position?.pnlAmount, 0),
     pnlPercent: safeNumber(position?.pnlPercent, 0),
 
-    reason: "",
-  };
-
-  const point21Reason = dedupeReasonParts([
-    decision?.point21Reason,
-    buildBasePoint21Reason(base),
-  ]).join("；");
-
-  const supportReason = dedupeReasonParts([
-    decision?.supportReason,
-    buildBaseSupportReason(base),
-  ]).join("；");
-
-  const riskReason = dedupeReasonParts([
-    decision?.riskReason,
-  ]).join("；");
-
-  const reason = dedupeReasonParts([
-    decision?.reason,
-    point21Reason,
-    supportReason,
-    riskReason,
-  ]).join("；");
-
-  return {
-    ...base,
-    point21Reason,
-    supportReason,
-    riskReason,
-    reason,
+    reason: buildReasonText({
+      code: String(quote?.symbol || code),
+      name: String(quote?.name || code),
+      price: safeNumber(quote?.price, 0),
+      change: safeNumber(quote?.change, 0),
+      changePercent: safeNumber(quote?.changePercent ?? quote?.pct, 0),
+      action: String(decision?.action || "觀望"),
+      finalAction: String(decision?.finalAction || decision?.action || "觀望"),
+      risk: String(decision?.risk || "中"),
+      score: safeNumber(decision?.score, 0),
+      finalScore: safeNumber(decision?.finalScore ?? decision?.score, 0),
+      point21Value: pickPoint21Value(decision),
+      simulatedPrice: pickSimulatedPrice(decision, quote),
+      diffValue: pickDiffValue(decision),
+      upperBound: pickUpperBound(decision, quote),
+      supportPrice: safeNumber(decision?.supportPrice, 0),
+      supportDays: Math.max(0, Math.round(safeNumber(decision?.supportDays, 0))),
+      structureBroken: Boolean(decision?.structureBroken),
+      riskReason: String(decision?.riskReason || ""),
+      reason: String(decision?.reason || ""),
+    }),
   };
 }
 
@@ -476,7 +400,7 @@ export function buildScannerText(rows: any[]): string {
     supportDays: safeNumber(row?.supportDays, 0),
     structureBroken: Boolean(row?.structureBroken),
     hasPosition: Boolean(row?.hasPosition),
-    reason: safeString(row?.reason),
+    reason: String(row?.reason || ""),
   }));
 
   normalized.sort(
