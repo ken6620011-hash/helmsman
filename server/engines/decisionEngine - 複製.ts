@@ -1,6 +1,5 @@
 import HELMSMAN_CONFIG from "../config/helmsmanConfig";
 import runRiskEngine, { type RiskEngineResult } from "./riskEngine";
-import { checkNewPositionAllowance } from "./positionEngine";
 
 export type DecisionInput = {
   code?: string;
@@ -28,10 +27,6 @@ export type DecisionInput = {
   trailingStopEnabled?: boolean;
 
   marketState?: string;
-
-  // ===== 倉位控制（新增，但保持向下相容）=====
-  accountCapital?: number;
-  plannedPositionValue?: number;
 };
 
 export type DecisionResult = {
@@ -74,14 +69,6 @@ export type DecisionResult = {
 
   marketState: string;
   reason: string;
-
-  // ===== 倉位控制結果（新增）=====
-  allowNewPosition: boolean;
-  suggestedPositionSize: number;   // 0 ~ 1
-  suggestedPositionValue: number;  // 金額
-  maxExposure: number;             // 0 ~ 1
-  exposureStatus: "OK" | "LIMIT_REACHED" | "BLOCKED";
-  exposureMessage: string;
 };
 
 function safeNumber(v: unknown, fallback = 0): number {
@@ -113,8 +100,6 @@ function pushUniqueSemantic(parts: string[], text: string) {
     if (p.includes("支撐") && text.includes("支撐")) return true;
     if (p.includes("結構") && text.includes("結構")) return true;
     if (p.includes("停損") && text.includes("停損")) return true;
-    if (p.includes("市場狀態") && text.includes("市場狀態")) return true;
-    if (p.includes("倉位控制") && text.includes("倉位控制")) return true;
     return false;
   });
 
@@ -223,32 +208,6 @@ function buildGatedReason(marketState: string, baseAction: string, finalAction: 
   return "";
 }
 
-function buildPositionReason(
-  allowNewPosition: boolean,
-  suggestedPositionSize: number,
-  exposureStatus: "OK" | "LIMIT_REACHED" | "BLOCKED",
-  baseAction: string,
-  finalAction: string
-): string {
-  if (finalAction === "防守" && baseAction === "進攻") {
-    return "";
-  }
-
-  if (!allowNewPosition) {
-    return "倉位控制＝目前不建議開新倉";
-  }
-
-  if (exposureStatus === "LIMIT_REACHED") {
-    return "倉位控制＝總倉位已接近上限";
-  }
-
-  if (suggestedPositionSize > 0) {
-    return `倉位控制＝建議單檔 ${round2(suggestedPositionSize * 100)}%`;
-  }
-
-  return "";
-}
-
 export function runDecisionJson(input: DecisionInput): DecisionResult {
   const code = safeText(input.code);
   const name = safeText(input.name) || code;
@@ -296,39 +255,20 @@ export function runDecisionJson(input: DecisionInput): DecisionResult {
 
   const finalAction = applyMarketGate(baseAction, marketState, risk);
 
-  console.log("🔥 DECISION GATE ACTIVE", {
-    code,
-    marketState,
-    baseAction,
-    finalAction,
-  });
-
+// ===== 🔥 驗證用（一定會印）=====
+console.log("🔥 DECISION GATE ACTIVE", {
+  code,
+  marketState,
+  baseAction,
+  finalAction,
+});
   const gatedReason = buildGatedReason(marketState, baseAction, finalAction);
-
-  // ===== 倉位控制（新增）=====
-  const accountCapital = Math.max(0, safeNumber(input.accountCapital, 0));
-  const plannedPositionValue = Math.max(0, safeNumber(input.plannedPositionValue, 0));
-
-  const positionAllowance = checkNewPositionAllowance({
-    marketState,
-    accountCapital,
-    newPositionValue: plannedPositionValue,
-  });
-
-  const positionReason = buildPositionReason(
-    positionAllowance.allowed,
-    positionAllowance.suggestedPositionSize,
-    positionAllowance.status,
-    baseAction,
-    finalAction
-  );
 
   const parts: string[] = [];
   pushUniqueSemantic(parts, point21Reason);
   pushUniqueSemantic(parts, supportReason);
   pushUniqueSemantic(parts, risk.riskReason);
   pushUniqueSemantic(parts, gatedReason);
-  pushUniqueSemantic(parts, positionReason);
 
   const reason = parts.join("；");
   const score = calcScore(point21Value);
@@ -373,13 +313,6 @@ export function runDecisionJson(input: DecisionInput): DecisionResult {
 
     marketState,
     reason,
-
-    allowNewPosition: positionAllowance.allowed,
-    suggestedPositionSize: positionAllowance.suggestedPositionSize,
-    suggestedPositionValue: positionAllowance.suggestedPositionValue,
-    maxExposure: positionAllowance.maxExposure,
-    exposureStatus: positionAllowance.status,
-    exposureMessage: positionAllowance.message,
   };
 }
 

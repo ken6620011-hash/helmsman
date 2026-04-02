@@ -51,6 +51,14 @@ export type StockOutput = {
   pnlAmount?: number;
   pnlPercent?: number;
 
+  // ===== 倉位控制（新增）=====
+  allowNewPosition?: boolean;
+  suggestedPositionSize?: number;
+  suggestedPositionValue?: number;
+  maxExposure?: number;
+  exposureStatus?: string;
+  exposureMessage?: string;
+
   reason: string;
 };
 
@@ -81,6 +89,11 @@ function fmtPct(v: unknown): string {
   return `${n >= 0 ? "+" : ""}${n}%`;
 }
 
+function fmtRatioPct(v: unknown): string {
+  const n = safeNumber(v, 0);
+  return `${safeNumber((n * 100).toFixed ? Number((n * 100).toFixed(2)) : n * 100, 0)}%`;
+}
+
 function normalizeMarketStateLabel(v: unknown): string {
   const text = safeText(v);
 
@@ -91,6 +104,25 @@ function normalizeMarketStateLabel(v: unknown): string {
   if (text === "CORRECTION") return "修正";
 
   return text;
+}
+
+function normalizeExposureStatus(v: unknown): string {
+  const text = safeText(v);
+
+  if (!text) return "";
+  if (text === "OK") return "可進場";
+  if (text === "LIMIT_REACHED") return "接近上限";
+  if (text === "BLOCKED") return "禁止新倉";
+
+  return text;
+}
+
+function normalizeAllowNewPosition(v: unknown): string {
+  if (typeof v === "boolean") {
+    return v ? "允許" : "停用";
+  }
+
+  return "";
 }
 
 function pickPoint21Value(decision: any): number {
@@ -213,6 +245,47 @@ function buildPositionLines(d: StockOutput): string[] {
 
   if (typeof d.pnlAmount === "number" || typeof d.pnlPercent === "number") {
     lines.push(`損益：${fmtNumber(d.pnlAmount)} / ${fmtPct(d.pnlPercent)}`);
+  }
+
+  return lines;
+}
+
+function buildExposureLines(d: StockOutput): string[] {
+  const lines: string[] = [];
+
+  const allowText = normalizeAllowNewPosition(d.allowNewPosition);
+  const suggestedSize = safeNumber(d.suggestedPositionSize, 0);
+  const suggestedValue = safeNumber(d.suggestedPositionValue, 0);
+  const maxExposure = safeNumber(d.maxExposure, 0);
+  const exposureStatus = normalizeExposureStatus(d.exposureStatus);
+  const exposureMessage = safeText(d.exposureMessage);
+
+  if (!allowText && !suggestedSize && !suggestedValue && !maxExposure && !exposureStatus && !exposureMessage) {
+    return lines;
+  }
+
+  if (allowText) {
+    lines.push(`新倉：${allowText}`);
+  }
+
+  if (suggestedSize > 0) {
+    lines.push(`建議單檔：${fmtRatioPct(suggestedSize)}`);
+  }
+
+  if (suggestedValue > 0) {
+    lines.push(`建議金額：${fmtNumber(suggestedValue)}`);
+  }
+
+  if (maxExposure > 0) {
+    lines.push(`總倉上限：${fmtRatioPct(maxExposure)}`);
+  }
+
+  if (exposureStatus) {
+    lines.push(`倉位狀態：${exposureStatus}`);
+  }
+
+  if (exposureMessage) {
+    lines.push(`說明：${exposureMessage}`);
   }
 
   return lines;
@@ -352,6 +425,16 @@ export function buildStockOutput(
     pnlAmount: safeNumber(position?.pnlAmount, 0),
     pnlPercent: safeNumber(position?.pnlPercent, 0),
 
+    allowNewPosition:
+      typeof decision?.allowNewPosition === "boolean"
+        ? decision.allowNewPosition
+        : undefined,
+    suggestedPositionSize: safeNumber(decision?.suggestedPositionSize, 0),
+    suggestedPositionValue: safeNumber(decision?.suggestedPositionValue, 0),
+    maxExposure: safeNumber(decision?.maxExposure, 0),
+    exposureStatus: safeText(decision?.exposureStatus),
+    exposureMessage: safeText(decision?.exposureMessage),
+
     reason: safeText(decision?.reason),
   };
 
@@ -385,6 +468,13 @@ export function buildStockReplyText(d: StockOutput): string {
   lines.push(`風險：${String(d.risk || "中")}`);
   lines.push(`Score：${fmtNumber(d.finalScore ?? d.score)}`);
   lines.push("");
+
+  const exposureLines = buildExposureLines(d);
+  if (exposureLines.length > 0) {
+    lines.push("📌 倉位");
+    lines.push(...exposureLines);
+    lines.push("");
+  }
 
   lines.push("📌 持倉");
   lines.push(...buildPositionLines(d));
@@ -426,6 +516,14 @@ export function buildScannerText(rows: any[]): string {
     structureBroken: Boolean(row?.structureBroken),
     hasPosition: Boolean(row?.hasPosition),
     marketState: normalizeMarketStateLabel(row?.marketState),
+    allowNewPosition:
+      typeof row?.allowNewPosition === "boolean"
+        ? row.allowNewPosition
+        : undefined,
+    suggestedPositionSize: safeNumber(row?.suggestedPositionSize, 0),
+    maxExposure: safeNumber(row?.maxExposure, 0),
+    exposureStatus: safeText(row?.exposureStatus),
+    exposureMessage: safeText(row?.exposureMessage),
     reason: safeText(row?.reason),
   }));
 
@@ -451,6 +549,18 @@ export function buildScannerText(rows: any[]): string {
 
     if (safeText(row.marketState)) {
       lines.push(`市場：${safeText(row.marketState)}`);
+    }
+
+    if (typeof row.allowNewPosition === "boolean") {
+      lines.push(`新倉：${row.allowNewPosition ? "允許" : "停用"}`);
+    }
+
+    if (safeNumber(row.suggestedPositionSize, 0) > 0) {
+      lines.push(`建議單檔：${fmtRatioPct(row.suggestedPositionSize)}`);
+    }
+
+    if (safeText(row.exposureStatus)) {
+      lines.push(`倉位狀態：${normalizeExposureStatus(row.exposureStatus)}`);
     }
 
     lines.push(`持倉：${row.hasPosition ? "有" : "無"}`);
@@ -484,6 +594,12 @@ export function buildAlertTestText(rows: any[]): string {
     supportPrice: safeNumber(row?.supportPrice, 0),
     hasPosition: Boolean(row?.hasPosition),
     marketState: normalizeMarketStateLabel(row?.marketState),
+    allowNewPosition:
+      typeof row?.allowNewPosition === "boolean"
+        ? row.allowNewPosition
+        : undefined,
+    suggestedPositionSize: safeNumber(row?.suggestedPositionSize, 0),
+    exposureStatus: safeText(row?.exposureStatus),
   }));
 
   const alertRows = normalized.filter((x) => x.score >= 60);
@@ -506,6 +622,15 @@ export function buildAlertTestText(rows: any[]): string {
     );
     if (safeText(x.marketState)) {
       lines.push(`   市場：${safeText(x.marketState)}`);
+    }
+    if (typeof x.allowNewPosition === "boolean") {
+      lines.push(`   新倉：${x.allowNewPosition ? "允許" : "停用"}`);
+    }
+    if (safeNumber(x.suggestedPositionSize, 0) > 0) {
+      lines.push(`   建議單檔：${fmtRatioPct(x.suggestedPositionSize)}`);
+    }
+    if (safeText(x.exposureStatus)) {
+      lines.push(`   倉位狀態：${normalizeExposureStatus(x.exposureStatus)}`);
     }
     lines.push(`   持倉：${x.hasPosition ? "有" : "無"}`);
     if (x.supportPrice > 0) {
