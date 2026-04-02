@@ -36,6 +36,9 @@ export type AlertEngineInput = {
   upperBound?: number;
 
   hasPosition?: boolean;
+
+  // 往後市場總閘門可直接接，不影響現有呼叫
+  marketState?: string;
 };
 
 export type AlertEventType =
@@ -97,6 +100,24 @@ function getScoreBucket(score: number): string {
   if (score >= 60) return "60+";
   if (score >= 40) return "40+";
   return "<40";
+}
+
+function isMarketGateBlocked(input: AlertEngineInput, eventType: AlertEventType): boolean {
+  const state = normalizeText(input.marketState);
+
+  if (!state) return false;
+
+  // 市場不好時，關掉進攻，保留防守 / 出場
+  if ((state === "空頭延續" || state === "高波動震盪") && eventType === "ATTACK_ENTRY") {
+    return true;
+  }
+
+  // 空頭反彈也不鼓勵大舉進攻
+  if (state === "空頭反彈" && eventType === "ATTACK_ENTRY") {
+    return true;
+  }
+
+  return false;
 }
 
 function getEventType(input: AlertEngineInput, exitResult: ExitEngineResult | null): AlertEventType {
@@ -189,6 +210,7 @@ function buildEntryMessage(input: AlertEngineInput): string {
   const supportDays = Math.round(safeNumber(input.supportDays, 0));
   const diffValue = safeNumber(input.diffValue, 0);
   const upperBound = safeNumber(input.upperBound, 0);
+  const marketState = normalizeText(input.marketState);
 
   const lines: string[] = [];
   lines.push("🚀 Helmsman 進攻警報");
@@ -208,6 +230,10 @@ function buildEntryMessage(input: AlertEngineInput): string {
     lines.push(`差值：${fmtNumber(diffValue)}｜上緣：${fmtNumber(upperBound)}`);
   }
 
+  if (marketState) {
+    lines.push(`市場：${marketState}`);
+  }
+
   if (normalizeText(input.reason)) {
     lines.push(`判斷：${normalizeText(input.reason)}`);
   }
@@ -222,16 +248,24 @@ function buildDefenseMessage(input: AlertEngineInput): string {
   const score = safeNumber(input.score, 0);
   const riskLevel = normalizeText(input.riskLevel || "高");
   const reason = normalizeText(input.reason || input.riskReason || "風險升高");
+  const marketState = normalizeText(input.marketState);
 
-  return [
+  const lines: string[] = [
     "🛡️ Helmsman 防守警報",
     `${code} ${name}`,
     `現價：${fmtNumber(price)}`,
     `指令：防守`,
     `風險：${riskLevel}`,
     `Score：${fmtNumber(score)}`,
-    `判斷：${reason}`,
-  ].join("\n");
+  ];
+
+  if (marketState) {
+    lines.push(`市場：${marketState}`);
+  }
+
+  lines.push(`判斷：${reason}`);
+
+  return lines.join("\n");
 }
 
 function buildWatchMessage(input: AlertEngineInput): string {
@@ -240,15 +274,23 @@ function buildWatchMessage(input: AlertEngineInput): string {
   const price = safeNumber(input.price, 0);
   const score = safeNumber(input.score, 0);
   const reason = normalizeText(input.reason || "觀望中");
+  const marketState = normalizeText(input.marketState);
 
-  return [
+  const lines: string[] = [
     "👀 Helmsman 觀望提醒",
     `${code} ${name}`,
     `現價：${fmtNumber(price)}`,
     `指令：觀望`,
     `Score：${fmtNumber(score)}`,
-    `判斷：${reason}`,
-  ].join("\n");
+  ];
+
+  if (marketState) {
+    lines.push(`市場：${marketState}`);
+  }
+
+  lines.push(`判斷：${reason}`);
+
+  return lines.join("\n");
 }
 
 function buildExitMessage(input: AlertEngineInput, exitResult: ExitEngineResult): string {
@@ -323,7 +365,7 @@ export function runAlertEngine(input: AlertEngineInput): AlertEngineResult {
   const scoreBucket = getScoreBucket(score);
   const dedupeKey = buildDedupeKey(input, eventType);
 
-  if (eventType === "NONE" || !isAllowedEvent(eventType)) {
+  if (eventType === "NONE" || !isAllowedEvent(eventType) || isMarketGateBlocked(input, eventType)) {
     return {
       triggered: false,
       eventType: "NONE",
@@ -389,6 +431,22 @@ export function runAlertEngine(input: AlertEngineInput): AlertEngineResult {
   } else if (eventType === "EXIT_ALERT" && exitResult) {
     title = "出場警報";
     message = buildExitMessage(input, exitResult);
+  }
+
+  if (!message.trim()) {
+    return {
+      triggered: false,
+      eventType: "NONE",
+      title: "",
+      message: "",
+      code,
+      name,
+      cooldownBlocked: false,
+      dedupeBlocked: false,
+      scoreBucket,
+      dedupeKey,
+      exitResult,
+    };
   }
 
   saveAlertMemory(code, dedupeKey, message);

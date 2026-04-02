@@ -101,7 +101,6 @@ router.post("/", async (req, res) => {
           upperBound: output.upperBound,
 
           hasPosition: output.hasPosition,
-          marketState: output.marketState,
         });
 
         let finalText = stockText;
@@ -168,7 +167,6 @@ router.post("/", async (req, res) => {
               upperBound: output.upperBound,
 
               hasPosition: output.hasPosition,
-              marketState: output.marketState,
             });
 
             if (alertResult.triggered && alertResult.message) {
@@ -239,9 +237,6 @@ router.post("/", async (req, res) => {
           lines.push(`損益：${row.pnlAmount ?? 0} / ${row.pnlPercent ?? 0}%`);
           if (row.trailingStopActive) {
             lines.push(`移動停損：${row.trailingStopPrice ?? 0}`);
-          }
-          if (row.marketState) {
-            lines.push(`市場：${row.marketState}`);
           }
         }
 
