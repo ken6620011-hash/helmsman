@@ -6,7 +6,7 @@ export type Point21InputBar = {
 };
 
 export type Point21TeacherInput = {
-  pointValue?: number;
+  pointValue?: number;       // 保留相容，但量化模式預設不使用固定 teacher map
   simulatedPrice?: number;
   diffValue?: number;
 };
@@ -24,12 +24,12 @@ export type Point21Output = {
   simulatedPrice: number;    // 平台基準價
   diffValue: number;         // 老師風格差值
   upperBound: number;        // 上緣
-  positionRatio: number;     // 0~1
+  positionRatio: number;     // 0~1，價格在區間中的位置
   point21State: "弱" | "中" | "強";
   point21Reason: string;
 };
 
-// 量化模式：不使用固定老師表
+// 量化模式：移除固定老師表，避免覆蓋公式結果
 const TEACHER_POINT21_MAP: Record<
   string,
   { pointValue: number; simulatedPrice: number; diffValue: number }
@@ -71,43 +71,43 @@ function avg(values: number[]): number {
 }
 
 function recent21(bars: Required<Point21InputBar>[]): Required<Point21InputBar>[] {
-  if (!bars.length) return [];
   return bars.slice(-21);
 }
 
 /**
- * 回退到前一版骨架，只做小幅校正
- * - 平台不能壓太低
- * - 也不能抬太高
+ * 平台價：
+ * 更貼近低點，但不要太極端。
  */
 function inferSimulatedPrice(price: number, bars: Required<Point21InputBar>[]): number {
-  const recent = recent21(bars);
-  if (recent.length < 5) return round2(price);
+  if (bars.length < 5) return round2(price);
 
+  const recent = recent21(bars);
   const lows = recent.map((b) => b.low).filter((v) => v > 0);
+
   if (!lows.length) return round2(price);
 
   const minLow = Math.min(...lows);
   const avgLow = avg(lows);
 
-  // 比上一版略微抬高一點點，避免 2330 平台過低
-  return round2(minLow * 0.78 + avgLow * 0.22);
+  return round2(minLow * 0.82 + avgLow * 0.18);
 }
 
 /**
- * 上緣：延續上一版穩定骨架，只做小幅微調
+ * 上緣：
+ * 更貼近高點，但保留平滑。
  */
 function inferUpperBound(price: number, bars: Required<Point21InputBar>[]): number {
-  const recent = recent21(bars);
-  if (recent.length < 5) return round2(price);
+  if (bars.length < 5) return round2(price);
 
+  const recent = recent21(bars);
   const highs = recent.map((b) => b.high).filter((v) => v > 0);
+
   if (!highs.length) return round2(price);
 
   const maxHigh = Math.max(...highs);
   const avgHigh = avg(highs);
 
-  return round2(maxHigh * 0.72 + avgHigh * 0.28);
+  return round2(maxHigh * 0.76 + avgHigh * 0.24);
 }
 
 function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUpper: number): number {
@@ -121,31 +121,31 @@ function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUppe
     return round2(fallbackUpper);
   }
 
-  return round2(simulatedPrice + 1);
+  return round2(simulatedPrice);
 }
 
 /**
- * 老師分段
- * 保留前一版較穩的 mapping，不做暴力改動
+ * 老師對齊 21點 mapping
+ * ratio 越低（越接近平台）→ 點數越高
+ * ratio 越高（越接近上緣）→ 點數越低
  */
 function teacherMap(ratio: number): number {
   if (ratio <= 0.04) return 21;
   if (ratio <= 0.09) return 20;
   if (ratio <= 0.16) return 19;
-  if (ratio <= 0.24) return 18;
-  if (ratio <= 0.33) return 16;
-  if (ratio <= 0.44) return 14;
-  if (ratio <= 0.57) return 12;
-  if (ratio <= 0.69) return 10;
-  if (ratio <= 0.81) return 8;
-  if (ratio <= 0.92) return 5;
+  if (ratio <= 0.25) return 18;
+  if (ratio <= 0.35) return 16;
+  if (ratio <= 0.47) return 14;
+  if (ratio <= 0.60) return 12;
+  if (ratio <= 0.72) return 10;
+  if (ratio <= 0.84) return 8;
+  if (ratio <= 0.94) return 5;
   return 0;
 }
 
 /**
- * 差值：回到「溫和非線性」
- * 不用上一版太兇的 power 0.42
- * 改回比較接近老師的 sqrt 型態，再做小幅倍率調整
+ * 差值：
+ * 老師風格平滑壓縮版。
  */
 function inferDiffValue(price: number, simulatedPrice: number, upperBound: number): number {
   const range = upperBound - simulatedPrice;
@@ -155,8 +155,7 @@ function inferDiffValue(price: number, simulatedPrice: number, upperBound: numbe
   const remainRatio = clamp(remain / range, 0, 1);
   const rawRangePct = (range / simulatedPrice) * 100;
 
-  // 比原本 13.5 稍微往上校正，但不暴衝
-  const scaled = Math.sqrt(remainRatio) * rawRangePct * 13.9;
+  const scaled = Math.sqrt(remainRatio) * rawRangePct * 13.5;
 
   return round2(Math.max(0, scaled));
 }
@@ -209,9 +208,9 @@ export function runPoint21(input: Point21Input): Point21Output {
 
   const teacherMapData = TEACHER_POINT21_MAP[code];
 
-  // 量化模式：
-  // 固定 teacher map 為空
-  // 僅保留人工 teacher override
+  // 量化模式下：
+  // 1) 不使用固定 teacher map
+  // 2) 仍保留 input.teacher 手動覆蓋能力（如果你日後真的要手動校準）
   const teacherPoint = safeNumber(
     input?.teacher?.pointValue ?? teacherMapData?.pointValue,
     Number.NaN
