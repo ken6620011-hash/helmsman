@@ -13,6 +13,29 @@ import {
 
 const router = express.Router();
 
+/**
+ * ✅ 新增首頁
+ * GET /api/position
+ */
+router.get("/", (_req, res) => {
+  try {
+    return res.json({
+      ok: true,
+      data: {
+        engine: getPositionEngineStatus(),
+        openPositions: listOpenPositions(),
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ position root error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error?.message || "position root failed",
+    });
+  }
+});
+
 router.get("/status", (_req, res) => {
   try {
     return res.json({
