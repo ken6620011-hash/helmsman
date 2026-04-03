@@ -107,12 +107,10 @@ function isMarketGateBlocked(input: AlertEngineInput, eventType: AlertEventType)
 
   if (!state) return false;
 
-  // 市場不好時，關掉進攻，保留防守 / 出場
   if ((state === "空頭延續" || state === "高波動震盪") && eventType === "ATTACK_ENTRY") {
     return true;
   }
 
-  // 空頭反彈也不鼓勵大舉進攻
   if (state === "空頭反彈" && eventType === "ATTACK_ENTRY") {
     return true;
   }
@@ -175,7 +173,9 @@ function buildDedupeKey(input: AlertEngineInput, eventType: AlertEventType): str
   return parts.join("|");
 }
 
-function isCooldownBlocked(code: string): boolean {
+function isCooldownBlocked(code: string, eventType: AlertEventType): boolean {
+  if (eventType === "EXIT_ALERT") return false;
+
   const memory = alertMemory.get(code);
   if (!memory) return false;
 
@@ -183,7 +183,9 @@ function isCooldownBlocked(code: string): boolean {
   return now - memory.ts < HELMSMAN_CONFIG.alert.cooldownMs;
 }
 
-function isDedupeBlocked(code: string, dedupeKey: string): boolean {
+function isDedupeBlocked(code: string, dedupeKey: string, eventType: AlertEventType): boolean {
+  if (eventType === "EXIT_ALERT") return false;
+
   const memory = alertMemory.get(code);
   if (!memory) return false;
   return memory.dedupeKey === dedupeKey;
@@ -299,6 +301,7 @@ function buildExitMessage(input: AlertEngineInput, exitResult: ExitEngineResult)
   const price = safeNumber(input.price, 0);
   const trailingStopPrice = safeNumber(input.trailingStopPrice, 0);
   const stopLossPrice = safeNumber(input.stopLossPrice, 0);
+  const marketState = normalizeText(input.marketState);
 
   const lines: string[] = [];
   lines.push("⛔ Helmsman 出場警報");
@@ -306,6 +309,10 @@ function buildExitMessage(input: AlertEngineInput, exitResult: ExitEngineResult)
   lines.push(`現價：${fmtNumber(price)}`);
   lines.push(`出場類型：${exitResult.exitType}`);
   lines.push(`原因：${exitResult.exitReason}`);
+
+  if (marketState) {
+    lines.push(`市場：${marketState}`);
+  }
 
   if (trailingStopPrice > 0) {
     lines.push(`移動停損：${fmtNumber(trailingStopPrice)}`);
@@ -317,6 +324,13 @@ function buildExitMessage(input: AlertEngineInput, exitResult: ExitEngineResult)
 
   if (normalizeText(input.riskReason)) {
     lines.push(`風控：${normalizeText(input.riskReason)}`);
+  }
+
+  const after = exitResult.positionAfterExit;
+  if (after) {
+    lines.push(`平倉狀態：${after.status}`);
+    lines.push(`出場價：${fmtNumber(after.exitPrice ?? price)}`);
+    lines.push(`損益：${fmtNumber(after.pnlAmount)} / ${fmtPct(after.pnlPercent)}`);
   }
 
   return lines.join("\n");
@@ -358,6 +372,7 @@ export function runAlertEngine(input: AlertEngineInput): AlertEngineResult {
           action: input.finalAction || input.action,
           riskLevel: input.riskLevel,
           riskReason: input.riskReason,
+          marketState: input.marketState,
         })
       : null;
 
@@ -397,8 +412,8 @@ export function runAlertEngine(input: AlertEngineInput): AlertEngineResult {
     };
   }
 
-  const cooldownBlocked = isCooldownBlocked(code);
-  const dedupeBlocked = isDedupeBlocked(code, dedupeKey);
+  const cooldownBlocked = isCooldownBlocked(code, eventType);
+  const dedupeBlocked = isDedupeBlocked(code, dedupeKey, eventType);
 
   if (cooldownBlocked || dedupeBlocked) {
     return {

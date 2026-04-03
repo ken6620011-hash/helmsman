@@ -13,6 +13,11 @@ import {
   runAutoSupportOnce,
   getAutoSupportStatus,
 } from "./engines/autoSupportEngine";
+import {
+  startAutoAlert,
+  runAutoAlertOnce,
+  getAutoAlertStatus,
+} from "./engines/autoAlertEngine";
 
 dotenv.config();
 
@@ -34,12 +39,33 @@ function envNumber(value: unknown, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function envText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+
+  return "";
+}
+
 function buildSupportConfig() {
   return {
     enabled: envBool(process.env.AUTO_SUPPORT_ENABLED, true),
     intervalMs: envNumber(process.env.AUTO_SUPPORT_INTERVAL_MS, 5 * 60 * 1000),
     symbols: SCAN_SYMBOLS,
     kbarDays: envNumber(process.env.SUPPORT_KBAR_DAYS, 21),
+  };
+}
+
+function buildAutoAlertConfig() {
+  return {
+    enabled: envBool(process.env.AUTO_ALERT_ENABLED, false),
+    intervalMs: envNumber(process.env.AUTO_ALERT_INTERVAL_MS, 5 * 60 * 1000),
+    linePushToken: envText(
+      process.env.LINE_PUSH_TOKEN,
+      process.env.LINE_CHANNEL_ACCESS_TOKEN
+    ),
+    lineUserId: envText(process.env.LINE_USER_ID),
   };
 }
 
@@ -95,10 +121,57 @@ app.get("/api/support/run", async (_req, res) => {
   }
 });
 
+// ===== Auto Alert Debug Routes =====
+app.get("/api/auto-alert/status", (_req, res) => {
+  try {
+    const config = buildAutoAlertConfig();
+
+    return res.json({
+      ok: true,
+      autoAlert: {
+        config: {
+          enabled: config.enabled,
+          intervalMs: config.intervalMs,
+          hasLinePushToken: Boolean(config.linePushToken),
+          hasLineUserId: Boolean(config.lineUserId),
+        },
+        status: getAutoAlertStatus(),
+      },
+    });
+  } catch (error: any) {
+    console.error("❌ /api/auto-alert/status error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "auto alert status failed",
+    });
+  }
+});
+
+app.get("/api/auto-alert/run", async (_req, res) => {
+  try {
+    const config = buildAutoAlertConfig();
+    const result = await runAutoAlertOnce(config);
+
+    return res.json({
+      ok: true,
+      result,
+      status: getAutoAlertStatus(),
+    });
+  } catch (error: any) {
+    console.error("❌ /api/auto-alert/run error:", error);
+
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "auto alert run failed",
+    });
+  }
+});
+
 // ===== Boot =====
 app.listen(PORT, async () => {
   console.log(`🚀 Helmsman 已啟動：${PORT}`);
-  console.log("📦 server.ts（position 已掛載版）");
+  console.log("📦 server.ts（autoAlert + position 已掛載版）");
 
   const supportConfig = buildSupportConfig();
   console.log("🧠 AutoSupport Config:", supportConfig);
@@ -117,5 +190,29 @@ app.listen(PORT, async () => {
     }
   } else {
     console.log("⛔ AutoSupport 未啟用");
+  }
+
+  const autoAlertConfig = buildAutoAlertConfig();
+  console.log("🚨 AutoAlert Config:", {
+    enabled: autoAlertConfig.enabled,
+    intervalMs: autoAlertConfig.intervalMs,
+    hasLinePushToken: Boolean(autoAlertConfig.linePushToken),
+    hasLineUserId: Boolean(autoAlertConfig.lineUserId),
+  });
+
+  if (autoAlertConfig.enabled) {
+    try {
+      await runAutoAlertOnce(autoAlertConfig);
+    } catch (error) {
+      console.error("❌ AutoAlert 初次掃描失敗:", error);
+    }
+
+    try {
+      startAutoAlert(autoAlertConfig);
+    } catch (error) {
+      console.error("❌ AutoAlert 排程啟動失敗:", error);
+    }
+  } else {
+    console.log("⛔ AutoAlert 未啟用");
   }
 });

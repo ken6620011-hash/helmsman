@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 export type PositionSide = "LONG";
 
 export type PositionStatus = "OPEN" | "CLOSED";
@@ -80,8 +83,8 @@ export type PositionSnapshot = {
 
 export type MarketExposurePolicy = {
   marketState: MarketStateLabel | string;
-  maxExposure: number; // 0 ~ 1
-  suggestedPositionSize: number; // 0 ~ 1
+  maxExposure: number;
+  suggestedPositionSize: number;
   allowNewPosition: boolean;
   label: string;
 };
@@ -94,8 +97,8 @@ export type ExposureSummary = {
 
   totalOpenPositions: number;
   totalMarketValue: number;
-  currentExposure: number; // 0 ~ 1
-  availableExposure: number; // 0 ~ 1
+  currentExposure: number;
+  availableExposure: number;
 
   status: "OK" | "LIMIT_REACHED" | "BLOCKED";
   message: string;
@@ -120,8 +123,20 @@ export type NewPositionCheckResult = {
   message: string;
 };
 
+type PositionStoreFile = {
+  version: number;
+  updatedAt: number;
+  positions: PositionRecord[];
+  latestPrices: Record<string, number>;
+};
+
 const positionStore = new Map<string, PositionRecord>();
 const latestPriceStore = new Map<string, number>();
+
+const DATA_DIR = path.resolve(process.cwd(), "server/data");
+const POSITION_FILE = path.join(DATA_DIR, "positions.json");
+
+let hasLoadedFromDisk = false;
 
 function safeNumber(value: unknown, fallback = 0): number {
   const n = Number(value);
@@ -158,6 +173,234 @@ function normalizeMarketState(value: unknown): MarketStateLabel | string {
   if (state === "CORRECTION" || state === "修正") return "修正";
 
   return state;
+}
+
+function ensureDataDir(): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+function sanitizePositionRecord(input: any): PositionRecord | null {
+  const code = normalizeCode(input?.code);
+  const name = normalizeText(input?.name || code);
+  const status: PositionStatus =
+    normalizeText(input?.status) === "CLOSED" ? "CLOSED" : "OPEN";
+
+  const entryPrice = round2(safeNumber(input?.entryPrice, 0));
+  const quantity = Math.max(1, Math.round(safeNumber(input?.quantity, 1)));
+
+  if (!code || entryPrice <= 0) {
+    return null;
+  }
+
+  const highestPriceSinceEntry = round2(
+    Math.max(entryPrice, safeNumber(input?.highestPriceSinceEntry, entryPrice))
+  );
+
+  const lowestCandidate = safeNumber(input?.lowestPriceSinceEntry, entryPrice);
+  const lowestPriceSinceEntry = round2(
+    Math.max(0, Math.min(lowestCandidate, highestPriceSinceEntry))
+  );
+
+  const openedAt = Math.max(0, Math.round(safeNumber(input?.openedAt, nowTs())));
+  const updatedAt = Math.max(openedAt, Math.round(safeNumber(input?.updatedAt, openedAt)));
+
+  const closedAt =
+    status === "CLOSED"
+      ? Math.max(updatedAt, Math.round(safeNumber(input?.closedAt, updatedAt)))
+      : undefined;
+
+  const exitPrice =
+    status === "CLOSED"
+      ? (() => {
+          const v = round2(safeNumber(input?.exitPrice, 0));
+          return v > 0 ? v : undefined;
+        })()
+      : undefined;
+
+  const exitReason =
+    status === "CLOSED"
+      ? normalizeText(input?.exitReason || "manual") || "manual"
+      : undefined;
+
+  const notes = normalizeText(input?.notes) || undefined;
+
+  return {
+    code,
+    name,
+    side: "LONG",
+    status,
+    entryPrice,
+    quantity,
+    highestPriceSinceEntry,
+    lowestPriceSinceEntry,
+    openedAt,
+    updatedAt,
+    closedAt,
+    exitPrice,
+    exitReason,
+    notes,
+  };
+}
+
+function serializeStore(): PositionStoreFile {
+  return {
+    version: 1,
+    updatedAt: nowTs(),
+    positions: Array.from(positionStore.values()),
+    latestPrices: Object.fromEntries(latestPriceStore.entries()),
+  };
+}
+
+function writeStoreToDisk(): void {
+  ensureDataDir();
+  fs.writeFileSync(POSITION_FILE, JSON.stringify(serializeStore(), null, 2), "utf8");
+}
+
+function loadStoreFromDisk(): void {
+  if (hasLoadedFromDisk) return;
+  hasLoadedFromDisk = true;
+
+  ensureDataDir();
+
+  if (!fs.existsSync(POSITION_FILE)) {
+    writeStoreToDisk();
+    console.log(`📦 Position store initialized: ${POSITION_FILE}`);
+    return;
+  }
+
+  try {
+    const raw = fs.readFileSync(POSITION_FILE, "utf8");
+    const parsed = JSON.parse(raw) as Partial<PositionStoreFile>;
+
+    positionStore.clear();
+    latestPriceStore.clear();
+
+    const positions = Array.isArray(parsed?.positions) ? parsed.positions : [];
+    for (const item of positions) {
+      const record = sanitizePositionRecord(item);
+      if (!record) continue;
+      positionStore.set(record.code, record);
+    }
+
+    const latestPrices =
+      parsed?.latestPrices && typeof parsed.latestPrices === "object"
+        ? parsed.latestPrices
+        : {};
+
+    for (const [codeRaw, priceRaw] of Object.entries(latestPrices)) {
+      const code = normalizeCode(codeRaw);
+      const price = round2(safeNumber(priceRaw, 0));
+      if (!code || price <= 0) continue;
+      latestPriceStore.set(code, price);
+    }
+
+    for (const record of positionStore.values()) {
+      if (record.status === "OPEN" && !latestPriceStore.has(record.code)) {
+        latestPriceStore.set(record.code, record.entryPrice);
+      }
+      if (record.status === "CLOSED" && record.exitPrice && !latestPriceStore.has(record.code)) {
+        latestPriceStore.set(record.code, round2(record.exitPrice));
+      }
+    }
+
+    const openCount = Array.from(positionStore.values()).filter(
+      (x) => x.status === "OPEN"
+    ).length;
+
+    console.log(
+      `📦 Position store loaded: ${POSITION_FILE} | total=${positionStore.size} | open=${openCount}`
+    );
+  } catch (error) {
+    console.error("❌ Position store load failed:", error);
+    console.error("⚠️ Fallback: using empty in-memory store");
+    positionStore.clear();
+    latestPriceStore.clear();
+  }
+}
+
+function persistStore(): void {
+  loadStoreFromDisk();
+
+  try {
+    writeStoreToDisk();
+  } catch (error) {
+    console.error("❌ Position store save failed:", error);
+  }
+}
+
+function buildClosedSnapshot(record: PositionRecord): PositionSnapshot {
+  const currentPrice = round2(safeNumber(record.exitPrice, 0));
+  const pnlAmount = round2((currentPrice - record.entryPrice) * record.quantity);
+  const pnlPercent =
+    record.entryPrice > 0
+      ? round2(((currentPrice - record.entryPrice) / record.entryPrice) * 100)
+      : 0;
+
+  return {
+    code: record.code,
+    name: record.name,
+    status: record.status,
+
+    entryPrice: round2(record.entryPrice),
+    currentPrice,
+    quantity: record.quantity,
+
+    highestPriceSinceEntry: round2(record.highestPriceSinceEntry),
+    lowestPriceSinceEntry: round2(record.lowestPriceSinceEntry),
+
+    pnlAmount,
+    pnlPercent,
+
+    openedAt: record.openedAt,
+    updatedAt: record.updatedAt,
+    closedAt: record.closedAt,
+
+    exitPrice: record.exitPrice,
+    exitReason: record.exitReason,
+    notes: record.notes,
+  };
+}
+
+function buildOpenSnapshot(record: PositionRecord, currentPriceRaw?: number): PositionSnapshot {
+  const hasCurrentPrice =
+    typeof currentPriceRaw === "number" && Number.isFinite(currentPriceRaw);
+
+  const livePrice = hasCurrentPrice
+    ? safeNumber(currentPriceRaw, record.entryPrice)
+    : safeNumber(latestPriceStore.get(record.code), record.entryPrice);
+
+  const currentPrice = round2(livePrice);
+  const pnlAmount = round2((currentPrice - record.entryPrice) * record.quantity);
+  const pnlPercent =
+    record.entryPrice > 0
+      ? round2(((currentPrice - record.entryPrice) / record.entryPrice) * 100)
+      : 0;
+
+  return {
+    code: record.code,
+    name: record.name,
+    status: record.status,
+
+    entryPrice: round2(record.entryPrice),
+    currentPrice,
+    quantity: record.quantity,
+
+    highestPriceSinceEntry: round2(record.highestPriceSinceEntry),
+    lowestPriceSinceEntry: round2(record.lowestPriceSinceEntry),
+
+    pnlAmount,
+    pnlPercent,
+
+    openedAt: record.openedAt,
+    updatedAt: record.updatedAt,
+    closedAt: record.closedAt,
+
+    exitPrice: record.exitPrice,
+    exitReason: record.exitReason,
+    notes: record.notes,
+  };
 }
 
 function getMarketExposurePolicy(marketStateInput: MarketStateLabel | string): MarketExposurePolicy {
@@ -212,83 +455,14 @@ function getMarketExposurePolicy(marketStateInput: MarketStateLabel | string): M
   };
 }
 
-function buildClosedSnapshot(record: PositionRecord): PositionSnapshot {
-  const currentPrice = round2(safeNumber(record.exitPrice, 0));
-  const pnlAmount = round2((currentPrice - record.entryPrice) * record.quantity);
-  const pnlPercent =
-    record.entryPrice > 0
-      ? round2(((currentPrice - record.entryPrice) / record.entryPrice) * 100)
-      : 0;
-
-  return {
-    code: record.code,
-    name: record.name,
-    status: record.status,
-
-    entryPrice: round2(record.entryPrice),
-    currentPrice,
-    quantity: record.quantity,
-
-    highestPriceSinceEntry: round2(record.highestPriceSinceEntry),
-    lowestPriceSinceEntry: round2(record.lowestPriceSinceEntry),
-
-    pnlAmount,
-    pnlPercent,
-
-    openedAt: record.openedAt,
-    updatedAt: record.updatedAt,
-    closedAt: record.closedAt,
-
-    exitPrice: record.exitPrice,
-    exitReason: record.exitReason,
-    notes: record.notes,
-  };
-}
-
-function buildOpenSnapshot(record: PositionRecord, currentPriceRaw?: number): PositionSnapshot {
-  const livePrice =
-    safeNumber(currentPriceRaw, Number.NaN) === safeNumber(currentPriceRaw, Number.NaN)
-      ? safeNumber(latestPriceStore.get(record.code), record.entryPrice)
-      : safeNumber(currentPriceRaw, record.entryPrice);
-
-  const currentPrice = round2(livePrice);
-  const pnlAmount = round2((currentPrice - record.entryPrice) * record.quantity);
-  const pnlPercent =
-    record.entryPrice > 0
-      ? round2(((currentPrice - record.entryPrice) / record.entryPrice) * 100)
-      : 0;
-
-  return {
-    code: record.code,
-    name: record.name,
-    status: record.status,
-
-    entryPrice: round2(record.entryPrice),
-    currentPrice,
-    quantity: record.quantity,
-
-    highestPriceSinceEntry: round2(record.highestPriceSinceEntry),
-    lowestPriceSinceEntry: round2(record.lowestPriceSinceEntry),
-
-    pnlAmount,
-    pnlPercent,
-
-    openedAt: record.openedAt,
-    updatedAt: record.updatedAt,
-    closedAt: record.closedAt,
-
-    exitPrice: record.exitPrice,
-    exitReason: record.exitReason,
-    notes: record.notes,
-  };
-}
-
 export function openPosition(input: PositionOpenInput): PositionSnapshot | null {
+  loadStoreFromDisk();
+
   const code = normalizeCode(input?.code);
-  const name = String(input?.name || code).trim();
+  const name = normalizeText(input?.name || code);
   const entryPrice = round2(safeNumber(input?.entryPrice, 0));
   const quantity = Math.max(1, Math.round(safeNumber(input?.quantity, 1)));
-  const notes = String(input?.notes || "").trim();
+  const notes = normalizeText(input?.notes);
 
   if (!code || entryPrice <= 0) {
     return null;
@@ -306,25 +480,25 @@ export function openPosition(input: PositionOpenInput): PositionSnapshot | null 
     name,
     side: "LONG",
     status: "OPEN",
-
     entryPrice,
     quantity,
-
     highestPriceSinceEntry: entryPrice,
     lowestPriceSinceEntry: entryPrice,
-
     openedAt: ts,
     updatedAt: ts,
-    notes,
+    notes: notes || undefined,
   };
 
   positionStore.set(code, record);
   latestPriceStore.set(code, entryPrice);
+  persistStore();
 
   return buildOpenSnapshot(record, entryPrice);
 }
 
 export function updatePosition(input: PositionUpdateInput): PositionSnapshot | null {
+  loadStoreFromDisk();
+
   const code = normalizeCode(input?.code);
   const currentPrice = round2(safeNumber(input?.currentPrice, 0));
 
@@ -336,6 +510,7 @@ export function updatePosition(input: PositionUpdateInput): PositionSnapshot | n
 
   const record = positionStore.get(code);
   if (!record || record.status !== "OPEN") {
+    persistStore();
     return null;
   }
 
@@ -348,14 +523,17 @@ export function updatePosition(input: PositionUpdateInput): PositionSnapshot | n
   record.updatedAt = nowTs();
 
   positionStore.set(code, record);
+  persistStore();
 
   return buildOpenSnapshot(record, currentPrice);
 }
 
 export function closePosition(input: PositionCloseInput): PositionSnapshot | null {
+  loadStoreFromDisk();
+
   const code = normalizeCode(input?.code);
   const exitPrice = round2(safeNumber(input?.exitPrice, 0));
-  const exitReason = String(input?.exitReason || "").trim();
+  const exitReason = normalizeText(input?.exitReason || "manual");
 
   if (!code || exitPrice <= 0) {
     return null;
@@ -374,11 +552,14 @@ export function closePosition(input: PositionCloseInput): PositionSnapshot | nul
 
   latestPriceStore.set(code, exitPrice);
   positionStore.set(code, record);
+  persistStore();
 
   return buildClosedSnapshot(record);
 }
 
 export function getPosition(code: string): PositionSnapshot | null {
+  loadStoreFromDisk();
+
   const normalizedCode = normalizeCode(code);
   if (!normalizedCode) return null;
 
@@ -393,6 +574,8 @@ export function getPosition(code: string): PositionSnapshot | null {
 }
 
 export function hasOpenPosition(code: string): boolean {
+  loadStoreFromDisk();
+
   const normalizedCode = normalizeCode(code);
   if (!normalizedCode) return false;
 
@@ -401,8 +584,9 @@ export function hasOpenPosition(code: string): boolean {
 }
 
 export function getOpenPositionCount(): number {
-  let count = 0;
+  loadStoreFromDisk();
 
+  let count = 0;
   for (const record of positionStore.values()) {
     if (record.status === "OPEN") {
       count++;
@@ -413,6 +597,8 @@ export function getOpenPositionCount(): number {
 }
 
 export function listOpenPositions(): PositionSnapshot[] {
+  loadStoreFromDisk();
+
   const out: PositionSnapshot[] = [];
 
   for (const record of positionStore.values()) {
@@ -425,6 +611,8 @@ export function listOpenPositions(): PositionSnapshot[] {
 }
 
 export function listAllPositions(): PositionSnapshot[] {
+  loadStoreFromDisk();
+
   const out: PositionSnapshot[] = [];
 
   for (const record of positionStore.values()) {
@@ -439,23 +627,33 @@ export function listAllPositions(): PositionSnapshot[] {
 }
 
 export function removePosition(code: string): boolean {
+  loadStoreFromDisk();
+
   const normalizedCode = normalizeCode(code);
   if (!normalizedCode) return false;
 
   latestPriceStore.delete(normalizedCode);
-  return positionStore.delete(normalizedCode);
+  const deleted = positionStore.delete(normalizedCode);
+
+  if (deleted) {
+    persistStore();
+  }
+
+  return deleted;
 }
 
 export function clearAllPositions(): void {
+  loadStoreFromDisk();
   positionStore.clear();
   latestPriceStore.clear();
+  persistStore();
 }
 
 export function getTotalOpenMarketValue(): number {
-  const openPositions = listOpenPositions();
+  loadStoreFromDisk();
 
   return round2(
-    openPositions.reduce((sum, pos) => {
+    listOpenPositions().reduce((sum, pos) => {
       return sum + safeNumber(pos.currentPrice, 0) * safeNumber(pos.quantity, 0);
     }, 0)
   );
@@ -465,6 +663,8 @@ export function getExposureSummary(
   accountCapital: number,
   marketState: MarketStateLabel | string
 ): ExposureSummary {
+  loadStoreFromDisk();
+
   const capital = Math.max(0, safeNumber(accountCapital, 0));
   const policy = getMarketExposurePolicy(marketState);
   const totalMarketValue = getTotalOpenMarketValue();
@@ -506,6 +706,8 @@ export function getExposureSummary(
 export function checkNewPositionAllowance(
   input: NewPositionCheckInput
 ): NewPositionCheckResult {
+  loadStoreFromDisk();
+
   const capital = Math.max(0, safeNumber(input.accountCapital, 0));
   const requestedPositionValue = Math.max(0, safeNumber(input.newPositionValue, 0));
 
@@ -591,13 +793,28 @@ export function checkNewPositionAllowance(
 }
 
 export function getPositionEngineStatus() {
+  loadStoreFromDisk();
+
   return {
     total: positionStore.size,
     open: getOpenPositionCount(),
     closed: Array.from(positionStore.values()).filter((x) => x.status === "CLOSED").length,
     totalOpenMarketValue: getTotalOpenMarketValue(),
+    storeFile: POSITION_FILE,
+    loadedFromDisk: hasLoadedFromDisk,
   };
 }
+
+export function savePositionStore(): void {
+  persistStore();
+}
+
+export function reloadPositionStore(): void {
+  hasLoadedFromDisk = false;
+  loadStoreFromDisk();
+}
+
+loadStoreFromDisk();
 
 export default {
   openPosition,
@@ -614,4 +831,6 @@ export default {
   getExposureSummary,
   checkNewPositionAllowance,
   getPositionEngineStatus,
+  savePositionStore,
+  reloadPositionStore,
 };

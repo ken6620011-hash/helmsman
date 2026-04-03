@@ -1,5 +1,7 @@
 import axios from "axios";
-import { runAlertTestEngine } from "./alertTestEngine";
+import runFusion from "./fusionEngine";
+import runAlertEngine from "./alertEngine";
+import { listOpenPositions } from "./positionEngine";
 
 export type AutoAlertConfig = {
   enabled: boolean;
@@ -19,23 +21,26 @@ export type AutoAlertRunResult = {
 let timer: NodeJS.Timeout | null = null;
 let isRunning = false;
 
-function buildPushText(rows: any[]): string {
-  if (!rows.length) {
-    return "🔕 自動警報\n\n本輪無符合警報標的";
+function normalizeText(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function buildPushText(messages: string[]): string {
+  if (!messages.length) {
+    return "🔕 Helmsman 自動出場掃描\n\n本輪無出場事件";
   }
 
   const lines: string[] = [];
-  lines.push("🚨 Helmsman 自動警報");
+  lines.push("🚨 Helmsman 自動出場通知");
   lines.push("");
 
-  rows.slice(0, 5).forEach((x: any, i: number) => {
-    lines.push(
-      `${i + 1}. ${x.code} ${x.name} | Score:${x.score} | ${x.action} | ${x.level}`
-    );
-    lines.push(
-      `   起爆:${x.breakout} | 守穩:${x.supportDays}天 | 市場:${x.marketState}`
-    );
-    lines.push(`   判定：${x.reason}`);
+  messages.slice(0, 5).forEach((msg, i) => {
+    lines.push(`【${i + 1}】`);
+    lines.push(msg);
+
+    if (i < Math.min(messages.length, 5) - 1) {
+      lines.push("");
+    }
   });
 
   return lines.join("\n");
@@ -90,28 +95,99 @@ export async function runAutoAlertOnce(
     };
   }
 
-  const result = await runAlertTestEngine();
-  const alertRows = result.rows.filter((x) => x.shouldAlert);
+  const openPositions = listOpenPositions();
 
-  if (!alertRows.length) {
+  if (!openPositions.length) {
     return {
       ok: true,
-      scanned: result.total,
+      scanned: 0,
       alerts: 0,
       pushed: 0,
-      message: "本輪無符合警報標的",
+      message: "目前沒有持倉，略過自動掃描",
     };
   }
 
-  const text = buildPushText(alertRows);
+  const exitMessages: string[] = [];
+  let scanned = 0;
+
+  for (const pos of openPositions) {
+    const code = normalizeText(pos.code);
+    if (!code) continue;
+
+    try {
+      const fusion = await runFusion({ code });
+
+      const alertResult = runAlertEngine({
+        code: fusion.quote.symbol,
+        name: fusion.quote.name,
+
+        price: fusion.quote.price,
+        change: fusion.quote.change,
+        changePercent: fusion.quote.pct,
+
+        action: fusion.model.action,
+        finalAction: fusion.model.finalAction,
+        riskLevel: fusion.model.risk,
+        score: fusion.model.finalScore ?? fusion.model.score,
+
+        reason: fusion.model.reason,
+        riskReason: fusion.model.riskReason,
+
+        shouldExit: fusion.model.shouldExit,
+        canHold: fusion.model.canHold,
+
+        stopLossPrice: fusion.model.stopLossPrice,
+        trailingStopActive: fusion.model.trailingStopActive,
+        trailingStopPrice: fusion.model.trailingStopPrice,
+        trailingStopRule: fusion.model.trailingStopRule,
+
+        priceStopStatus: fusion.model.priceStopStatus,
+        structureBroken: fusion.model.structureBroken,
+
+        supportPrice: fusion.model.supportPrice,
+        supportDays: fusion.model.supportDays,
+
+        point21Value: fusion.model.point21Value,
+        diffValue: fusion.model.diffValue,
+        upperBound: fusion.model.upperBound,
+
+        hasPosition: fusion.hasPosition,
+        marketState: fusion.model.marketState,
+      });
+
+      scanned += 1;
+
+      if (
+        alertResult.triggered &&
+        alertResult.eventType === "EXIT_ALERT" &&
+        alertResult.message
+      ) {
+        exitMessages.push(alertResult.message);
+      }
+    } catch (error: any) {
+      console.error(`❌ autoAlert scan failed: ${code}`, error?.message || error);
+    }
+  }
+
+  if (!exitMessages.length) {
+    return {
+      ok: true,
+      scanned,
+      alerts: 0,
+      pushed: 0,
+      message: "本輪無出場事件",
+    };
+  }
+
+  const text = buildPushText(exitMessages);
   await pushLineMessage(config.linePushToken, config.lineUserId, text);
 
   return {
     ok: true,
-    scanned: result.total,
-    alerts: alertRows.length,
+    scanned,
+    alerts: exitMessages.length,
     pushed: 1,
-    message: "LINE 自動警報已送出",
+    message: "LINE 自動出場通知已送出",
   };
 }
 
@@ -138,7 +214,10 @@ export function startAutoAlert(config: AutoAlertConfig) {
       const result = await runAutoAlertOnce(config);
       console.log("autoAlert:", result.message, result);
     } catch (error: any) {
-      console.error("autoAlert error:", error?.response?.data || error?.message || error);
+      console.error(
+        "autoAlert error:",
+        error?.response?.data || error?.message || error
+      );
     } finally {
       isRunning = false;
     }
