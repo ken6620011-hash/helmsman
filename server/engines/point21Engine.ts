@@ -1,10 +1,3 @@
-
-// ===== Helmsman Point21 Engine（最終穩定版｜分離式架構）=====
-// 核心理念：
-// 1️⃣ 21點 = 位置（平台分段）
-// 2️⃣ diff = 溫度（乖離）
-// 3️⃣ upper/lower = 修正，不主導
-
 export type Point21InputBar = {
   open?: number;
   high?: number;
@@ -12,200 +5,223 @@ export type Point21InputBar = {
   close?: number;
 };
 
+export type Point21TeacherInput = {
+  pointValue?: number;       // 老師原始點數 0~21
+  simulatedPrice?: number;   // 模擬價位（平台基準）
+  diffValue?: number;        // 差值（溫度計）
+};
+
 export type Point21Input = {
   code?: string;
   price?: number;
   bars?: Point21InputBar[];
+  teacher?: Point21TeacherInput;
 };
 
 export type Point21Output = {
-  point21Score: number;
-  point21Value: number;
-
-  simulatedPrice: number; // 平台
-  diffValue: number;      // 溫度
-  upperBound: number;     // 上緣
-  lowerBound: number;     // 下緣
-
-  positionRatio: number;
-
+  point21Score: number;      // 0~100
+  point21Value: number;      // 0~21
+  simulatedPrice: number;    // 平台基準價
+  diffValue: number;         // 上緣距離
+  upperBound: number;        // 反推出來的上緣
+  positionRatio: number;     // 0~1，價格在區間中的位置
   point21State: "弱" | "中" | "強";
   point21Reason: string;
 };
 
-// ===== 基礎工具 =====
+const TEACHER_POINT21_MAP: Record<
+  string,
+  { pointValue: number; simulatedPrice: number; diffValue: number }
+> = {
+  "2308": { pointValue: 18, simulatedPrice: 1380, diffValue: 86.2 },
+  "3034": { pointValue: 18, simulatedPrice: 379.5, diffValue: 61.9 },
+  "2330": { pointValue: 6, simulatedPrice: 1760, diffValue: 47.3 },
+  "2454": { pointValue: 0, simulatedPrice: 1490, diffValue: 12.0 },
+  "2317": { pointValue: 0, simulatedPrice: 187.5, diffValue: 3.5 },
+};
 
-function safeNumber(v: unknown, fallback = 0): number {
-  const n = Number(v);
+function safeNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
-function round2(v: number): number {
-  return Number(v.toFixed(2));
+function round2(value: number): number {
+  return Number(value.toFixed(2));
 }
 
-function clamp(v: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, v));
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeCode(code?: string): string {
+  return String(code || "").trim();
 }
 
 function normalizeBars(bars?: Point21InputBar[]): Required<Point21InputBar>[] {
   if (!Array.isArray(bars)) return [];
 
   return bars
-    .map((b) => ({
-      open: safeNumber(b.open),
-      high: safeNumber(b.high),
-      low: safeNumber(b.low),
-      close: safeNumber(b.close),
+    .map((bar) => ({
+      open: safeNumber(bar?.open, 0),
+      high: safeNumber(bar?.high, 0),
+      low: safeNumber(bar?.low, 0),
+      close: safeNumber(bar?.close, 0),
     }))
-    .filter((b) => b.close > 0);
+    .filter((bar) => bar.close > 0);
 }
 
-function percentile(arr: number[], p: number): number {
-  if (!arr.length) return 0;
-  if (arr.length === 1) return arr[0];
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) return 0;
+  if (sortedAsc.length === 1) return sortedAsc[0];
 
-  const index = (arr.length - 1) * p;
-  const low = Math.floor(index);
-  const high = Math.ceil(index);
+  const index = (sortedAsc.length - 1) * p;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
 
-  if (low === high) return arr[low];
+  if (lower === upper) return sortedAsc[lower];
 
-  const w = index - low;
-  return arr[low] * (1 - w) + arr[high] * w;
+  const weight = index - lower;
+  return sortedAsc[lower] * (1 - weight) + sortedAsc[upper] * weight;
 }
 
-// ===== ① 平台（核心）=====
-// 👉 重權重：低點群
-
-function calcPlatform(price: number, bars: Required<Point21InputBar>[]): number {
+function inferSimulatedPrice(price: number, bars: Required<Point21InputBar>[]): number {
   if (bars.length < 5) return round2(price);
 
   const recent = bars.slice(-21);
-
-  const lows = recent
-    .map((b) => b.low)
-    .filter((v) => v > 0)
-    .sort((a, b) => a - b);
+  const lows = recent.map((b) => b.low).filter((v) => v > 0).sort((a, b) => a - b);
 
   if (!lows.length) return round2(price);
 
-  // 🔥 核心：25% 分位（穩）
+  // 用低點群 25% 分位，讓平台基準偏向老師「平台價」的感覺
   return round2(percentile(lows, 0.25));
 }
 
-// ===== ② 上下緣 =====
+function inferUpperBound(price: number, bars: Required<Point21InputBar>[]): number {
+  if (bars.length < 5) return round2(price);
 
-function calcUpper(bars: Required<Point21InputBar>[], fallback: number): number {
-  if (bars.length < 5) return fallback;
+  const recent = bars.slice(-21);
+  const highs = recent.map((b) => b.high).filter((v) => v > 0).sort((a, b) => a - b);
 
-  const highs = bars
-    .slice(-21)
-    .map((b) => b.high)
-    .filter((v) => v > 0)
-    .sort((a, b) => a - b);
+  if (!highs.length) return round2(price);
 
-  if (!highs.length) return fallback;
-
+  // 用高點群 75% 分位，避免單一極端高點污染
   return round2(percentile(highs, 0.75));
 }
 
-function calcLower(bars: Required<Point21InputBar>[], fallback: number): number {
-  if (bars.length < 5) return fallback;
+function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUpper: number): number {
+  const candidate = round2(simulatedPrice + diffValue);
 
-  const lows = bars
-    .slice(-21)
-    .map((b) => b.low)
-    .filter((v) => v > 0)
-    .sort((a, b) => a - b);
+  if (candidate > simulatedPrice) {
+    return candidate;
+  }
 
-  if (!lows.length) return fallback;
+  if (fallbackUpper > simulatedPrice) {
+    return round2(fallbackUpper);
+  }
 
-  return round2(percentile(lows, 0.1));
+  return round2(simulatedPrice);
 }
 
-// ===== ③ 21點（分段，不用公式）=====
-
-function mapToPoint21(ratio: number): number {
-  if (ratio <= 0) return 21;
-
-  if (ratio < 0.1) return 19;
-  if (ratio < 0.2) return 18;
-  if (ratio < 0.3) return 16;
-  if (ratio < 0.4) return 14;
-  if (ratio < 0.5) return 12;
-  if (ratio < 0.6) return 10;
-  if (ratio < 0.7) return 8;
-  if (ratio < 0.8) return 6;
-  if (ratio < 0.9) return 4;
-
-  return 0;
+function inferDiffValue(price: number, simulatedPrice: number, upperBound: number): number {
+  if (upperBound <= 0) return 0;
+  return round2(Math.max(0, upperBound - price));
 }
 
-// ===== ④ diff（溫度）=====
+function inferPointValue(price: number, simulatedPrice: number, upperBound: number): number {
+  if (price <= 0 || upperBound <= simulatedPrice) return 0;
 
-function calcDiff(price: number, platform: number): number {
-  if (platform <= 0) return 0;
+  const ratio = clamp((price - simulatedPrice) / (upperBound - simulatedPrice), 0, 1);
 
-  const raw = (price - platform) / platform;
-
-  // 🔥 scale（控制溫度強度）
-  const scale = 120;
-
-  return round2(raw * scale);
+  // 與老師風格收斂：越靠近上緣，點數越低
+  return clamp(21 - Math.round(ratio * 21), 0, 21);
 }
 
-// ===== 主流程 =====
+function inferPositionRatio(price: number, simulatedPrice: number, upperBound: number): number {
+  if (upperBound <= simulatedPrice) return 0;
+  return round2(clamp((price - simulatedPrice) / (upperBound - simulatedPrice), 0, 1));
+}
+
+function toScore(pointValue: number): number {
+  return clamp(round2((pointValue / 21) * 100), 0, 100);
+}
+
+function toState(pointValue: number): "弱" | "中" | "強" {
+  if (pointValue >= 14) return "強";
+  if (pointValue >= 7) return "中";
+  return "弱";
+}
+
+function toReason(
+  pointValue: number,
+  simulatedPrice: number,
+  diffValue: number,
+  upperBound: number
+): string {
+  const state = toState(pointValue);
+
+  if (state === "強") {
+    return `21點數偏強（${pointValue}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
+  }
+
+  if (state === "中") {
+    return `21點數中性（${pointValue}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
+  }
+
+  return `21點數偏弱（${pointValue}/21），平台 ${simulatedPrice}，差值 ${diffValue}，上緣 ${upperBound}`;
+}
 
 export function runPoint21(input: Point21Input): Point21Output {
+  const code = normalizeCode(input?.code);
   const price = round2(safeNumber(input?.price, 0));
   const bars = normalizeBars(input?.bars);
 
-  // ===== 平台 =====
-  const platform = calcPlatform(price, bars);
+  const teacherMap = TEACHER_POINT21_MAP[code];
 
-  // ===== 上下緣 =====
-  const upperRaw = calcUpper(bars, price);
-  const lowerRaw = calcLower(bars, price);
+  const teacherPoint = safeNumber(
+    input?.teacher?.pointValue ?? teacherMap?.pointValue,
+    Number.NaN
+  );
+  const teacherSimulatedPrice = safeNumber(
+    input?.teacher?.simulatedPrice ?? teacherMap?.simulatedPrice,
+    Number.NaN
+  );
+  const teacherDiffValue = safeNumber(
+    input?.teacher?.diffValue ?? teacherMap?.diffValue,
+    Number.NaN
+  );
 
-  const upper = Math.max(platform + 1, upperRaw);
-  const lower = Math.min(platform, lowerRaw);
+  const inferredSimulatedPrice = inferSimulatedPrice(price, bars);
+  const inferredUpperBound = inferUpperBound(price, bars);
 
-  // ===== ratio（只給21點用）=====
-  let ratio = 0;
+  const simulatedPrice = Number.isFinite(teacherSimulatedPrice)
+    ? round2(teacherSimulatedPrice)
+    : inferredSimulatedPrice;
 
-  if (upper > platform) {
-    ratio = clamp((price - platform) / (upper - platform), 0, 1);
-  }
+  const upperBound = buildUpperBound(
+    simulatedPrice,
+    Number.isFinite(teacherDiffValue) ? round2(teacherDiffValue) : 0,
+    inferredUpperBound
+  );
 
-  // ===== 21點 =====
-  const point21Value = mapToPoint21(ratio);
+  const diffValue = Number.isFinite(teacherDiffValue)
+    ? round2(teacherDiffValue)
+    : inferDiffValue(price, simulatedPrice, upperBound);
 
-  // ===== diff =====
-  const diffValue = calcDiff(price, platform);
+  const point21Value = Number.isFinite(teacherPoint)
+    ? clamp(Math.round(teacherPoint), 0, 21)
+    : inferPointValue(price, simulatedPrice, upperBound);
 
-  // ===== score =====
-  const point21Score = round2((point21Value / 21) * 100);
-
-  // ===== state =====
-  const state =
-    point21Value >= 14 ? "強" :
-    point21Value >= 7 ? "中" :
-    "弱";
+  const positionRatio = inferPositionRatio(price, simulatedPrice, upperBound);
 
   return {
-    point21Score,
+    point21Score: toScore(point21Value),
     point21Value,
-
-    simulatedPrice: platform,
+    simulatedPrice,
     diffValue,
-    upperBound: upper,
-    lowerBound: lower,
-
-    positionRatio: round2(ratio),
-
-    point21State: state,
-    point21Reason: `21點（${point21Value}/21）｜平台 ${platform}｜差值 ${diffValue}`,
+    upperBound,
+    positionRatio,
+    point21State: toState(point21Value),
+    point21Reason: toReason(point21Value, simulatedPrice, diffValue, upperBound),
   };
 }
 
