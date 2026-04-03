@@ -1,469 +1,692 @@
-export type HelmsmanSpec = {
-  identity: {
-    systemName: string;
-    codename: string;
-    mode: string;
-    currentLevel: string;
-    mission: string;
-  };
+// ==========================================================
+// HELMSMAN SPEC
+// 不可破壞核心規格 / 封頂版
+// ==========================================================
 
-  architecture: {
-    canonicalFlow: string[];
-    nonBreakableRule: string;
-    layers: Array<{
-      name: string;
-      responsibility: string;
-      forbidden: string[];
-    }>;
-  };
-
-  engineeringRules: {
-    outputPolicy: string[];
-    forbiddenPractices: string[];
-    overwriteProtocol: string[];
-  };
-
-  coreFormulaSpec: {
-    point21: {
-      purpose: string;
-      fields: string[];
-      interpretation: {
-        strong: string;
-        neutral: string;
-        weak: string;
-      };
-      thresholds: {
-        attack: number;
-        watch: number;
-        maxPoint: number;
-      };
-    };
-
-    platform: {
-      purpose: string;
-      canonicalField: string;
-      interpretation: string;
-    };
-
-    diffValue: {
-      purpose: string;
-      canonicalField: string;
-      interpretation: string;
-    };
-
-    upperBound: {
-      purpose: string;
-      canonicalField: string;
-      interpretation: string;
-      formulaNote: string;
-    };
-
-    support: {
-      purpose: string;
-      fields: string[];
-      interpretation: {
-        valid: string;
-        broken: string;
-      };
-      validDaysRule: string;
-    };
-
-    risk: {
-      purpose: string;
-      layers: string[];
-      outputs: string[];
-    };
-  };
-
-  decisionPolicy: {
-    baseLogic: string[];
-    marketStateLogic: string[];
-    riskOverrideLogic: string[];
-    finalActionValues: string[];
-  };
-
-  engineGovernance: {
-    singleSourceOfTruth: string;
-    engines: Array<{
-      name: string;
-      role: string;
-      inputs: string[];
-      outputs: string[];
-      forbidden: string[];
-    }>;
-  };
-
-  routeGovernance: {
-    rule: string;
-    routes: Array<{
-      path: string;
-      purpose: string;
-      restriction: string;
-    }>;
-  };
-
-  outputPolicy: {
-    webhookTag: string;
-    sections: string[];
-    requiredFields: string[];
-  };
-
-  persistencePolicy: {
-    configFile: string;
-    positionStore: string;
-    rationale: string[];
-  };
-
-  handoffPolicy: {
-    whatFutureAIShouldReadFirst: string[];
-    antiDriftRules: string[];
-  };
-};
-
-export const HELMSMAN_SPEC: HelmsmanSpec = {
-  identity: {
+export const HELMSMAN_SPEC = {
+  meta: {
     systemName: "Helmsman",
-    codename: "舵手",
-    mode: "實戰收斂 / 工程閉環",
-    currentLevel: "Level 5.9 → Level 6",
-    mission: "把判讀、風控、持倉、警報整合成可持續運作的交易系統",
+    systemAlias: "舵手",
+    specName: "HELMSMAN_SPEC",
+    specVersion: "1.0.0",
+    maturityLevel: "Level 8.9 → Level 9",
+    status: "主鏈閉環完成，生態池完成，進入封頂後整備期",
+    description: "AI Trading Operating System",
+    lastUpdatedPolicy: "manual",
   },
 
+  identity: {
+    purpose: "不是預測市場，是管理狀態",
+    principles: [
+      "不是找標的，是控制風險",
+      "不是單次交易，是持續系統",
+      "Engine 是唯一決策來源",
+      "規格先於敘事",
+      "系統先於個別模組",
+      "不允許漂移",
+    ],
+    language: "zh-TW",
+    outputMode: "WEBHOOK-V2",
+  },
+
+  // ==========================================================
+  // 🧱 不可破壞架構
+  // ==========================================================
   architecture: {
-    canonicalFlow: [
-      "Market",
-      "Quant",
-      "Engine",
-      "API",
-      "Frontend",
+    canonicalLayers: ["Market", "Quant", "Engine", "API", "Frontend"],
+
+    layerDefinition: {
+      Market: "行情資料與外部市場資料來源",
+      Quant: "指標、模型、結構、支撐、評分",
+      Engine: "唯一決策層，負責融合、判斷、風控、持倉、出場、警報",
+      API: "路由與對外接口層，只做轉接，不做決策",
+      Frontend: "顯示層，只負責展示，不做決策",
+    },
+
+    immutableRules: {
+      engineIsOnlyDecisionSource: true,
+      apiRoutesOnly: true,
+      frontendDisplayOnly: true,
+      noCrossLayerLogicLeak: true,
+      noDecisionInRoute: true,
+      noDecisionInFrontend: true,
+    },
+  },
+
+  // ==========================================================
+  // 🔗 主鏈 / 分鏈 / 生態池
+  // ==========================================================
+  topology: {
+    mainChain: [
+      "marketDataEngine.getQuote",
+      "point21Engine",
+      "supportEngine",
+      "marketStateEngine",
+      "fusionEngine",
+      "decisionEngine",
+      "positionEngine",
+      "exitEngine",
+      "alertEngine",
+      "outputService",
+      "webhookRoutes / stockRoutes / scannerRoutes",
+      "LINE / API / Frontend",
     ],
-    nonBreakableRule: "Engine 是唯一決策來源；API 只負責路由；Frontend 只負責顯示。",
-    layers: [
-      {
-        name: "Market",
-        responsibility: "提供報價、K棒、外部資料來源",
-        forbidden: [
-          "不可做決策",
-          "不可做風控",
-          "不可直接輸出交易結論",
-        ],
-      },
-      {
-        name: "Quant",
-        responsibility: "定義公式、閾值、模型結構",
-        forbidden: [
-          "不可直接操作 routes",
-          "不可直接發 LINE",
-        ],
-      },
-      {
-        name: "Engine",
-        responsibility: "唯一決策層；執行 point21 / support / risk / decision / position / alert",
-        forbidden: [
-          "不可由多個 engine 同時產生不同決策真相",
-        ],
-      },
-      {
-        name: "API",
-        responsibility: "把 request 轉給 engine，回傳結果",
-        forbidden: [
-          "不可寫交易邏輯",
-          "不可自行重算 score",
-          "不可自行產生另一套 decision",
-        ],
-      },
-      {
-        name: "Frontend",
-        responsibility: "展示結果與操作入口",
-        forbidden: [
-          "不可自算策略",
-          "不可改 decision 結果",
-        ],
-      },
+
+    subChains: [
+      "autoSupportEngine",
+      "autoAlertEngine",
+      "position persistence",
+      "LINE webhook loop",
+      "scanner loop",
+      "single stock query loop",
+      "holdings query loop",
+    ],
+
+    ecosystemPool: [
+      "support cache",
+      "scanner",
+      "position",
+      "exit",
+      "alert",
+      "output formatting",
+      "LINE reply",
+      "Render deploy",
+      "JSON persistence",
     ],
   },
 
-  engineeringRules: {
-    outputPolicy: [
-      "一律整檔輸出",
-      "一律完整覆蓋",
-      "必要時自動分段",
-      "回覆需包含檔名與覆蓋動作",
-    ],
-    forbiddenPractices: [
-      "不可用找 / 換 patch 模式",
-      "不可局部插入某一行",
-      "不可提供臨時 patch",
-      "不可讓不同檔案版本不同步",
-    ],
-    overwriteProtocol: [
-      "Ctrl + A",
-      "全部刪除",
-      "全部貼上",
-      "存檔",
-    ],
+  // ==========================================================
+  // 🧠 核心引擎治理
+  // ==========================================================
+  engineGovernance: {
+    sourceOfTruth: {
+      decision: "decisionEngine",
+      marketState: "marketStateEngine",
+      support: "supportEngine",
+      position: "positionEngine",
+      exit: "exitEngine",
+      alert: "alertEngine",
+      fusion: "fusionEngine",
+    },
+
+    engineResponsibilities: {
+      marketDataEngine: [
+        "取得 quote",
+        "取得 KBars",
+        "不做任何決策",
+      ],
+      point21Engine: [
+        "計算 point21Value / point21Score",
+        "計算 simulatedPrice / diffValue / upperBound",
+        "輸出 point21 狀態與原因",
+      ],
+      supportEngine: [
+        "計算支撐價",
+        "計算守穩天數",
+        "判定 structureBroken",
+      ],
+      marketStateEngine: [
+        "計算市場狀態",
+        "輸出攻擊 / 輪動 / 防守 / 修正",
+        "作為全系統最高層級市場閘門",
+      ],
+      fusionEngine: [
+        "整合 quote / bars / point21 / support / marketState / position",
+        "把資料送入 decisionEngine",
+        "不自行決策",
+      ],
+      decisionEngine: [
+        "唯一決策來源",
+        "輸出 action / finalAction / score / risk / reason",
+        "結合風控與市場閘門",
+        "結合倉位政策",
+      ],
+      positionEngine: [
+        "開倉 / 更新 / 平倉",
+        "維護持倉狀態",
+        "維護最高最低價",
+        "持久化 positions.json",
+        "提供倉位政策計算",
+      ],
+      exitEngine: [
+        "依結構 / 停損 / 移動停損 / 風控觸發出場",
+        "觸發 closePosition",
+      ],
+      alertEngine: [
+        "決定是否發出進攻 / 觀望 / 防守 / 出場警報",
+        "處理 cooldown / dedupe",
+        "不得成為決策來源",
+      ],
+      autoSupportEngine: [
+        "定時更新支撐資料",
+      ],
+      autoAlertEngine: [
+        "定時巡檢持倉",
+        "只處理自動出場 / 警報推送",
+      ],
+    },
   },
 
-  coreFormulaSpec: {
-    point21: {
-      purpose: "用價格在平台區間中的位置，映射為 0~21 的離散點數，作為主結構評分核心。",
-      fields: [
-        "point21Value",
+  // ==========================================================
+  // 📦 核心資料欄位規格
+  // ==========================================================
+  contracts: {
+    quote: {
+      required: ["symbol", "name", "price"],
+      optional: ["change", "pct", "volume"],
+    },
+
+    decisionCore: {
+      required: [
+        "score",
+        "finalScore",
+        "action",
+        "finalAction",
+        "risk",
+        "marketState",
+        "reason",
+      ],
+      structural: [
+        "supportPrice",
+        "supportDays",
+        "structureBroken",
+      ],
+      point21: [
         "point21Score",
+        "point21Value",
         "simulatedPrice",
         "diffValue",
         "upperBound",
         "point21State",
         "point21Reason",
       ],
-      interpretation: {
-        strong: "點數高，代表更接近低位優勢區 / 可攻擊區。",
-        neutral: "點數中間，代表結構中性，偏觀察。",
-        weak: "點數低，代表接近上緣或結構弱勢，偏防守。",
-      },
-      thresholds: {
-        attack: 18,
-        watch: 7,
-        maxPoint: 21,
-      },
+      risk: [
+        "stopLossPrice",
+        "trailingStopActive",
+        "trailingStopPrice",
+        "trailingStopRule",
+        "structureRisk",
+        "timeValidation",
+        "priceStopStatus",
+        "canHold",
+        "shouldExit",
+        "riskReason",
+      ],
+      exposure: [
+        "allowNewPosition",
+        "suggestedPositionSize",
+        "suggestedPositionValue",
+        "maxExposure",
+        "exposureStatus",
+        "exposureMessage",
+      ],
     },
 
-    platform: {
-      purpose: "simulatedPrice 為平台基準價，是 point21 判讀的結構核心基準。",
-      canonicalField: "simulatedPrice",
-      interpretation: "平台不是即時漲跌，而是結構定位基準。",
+    position: {
+      recordFields: [
+        "code",
+        "name",
+        "side",
+        "status",
+        "entryPrice",
+        "quantity",
+        "highestPriceSinceEntry",
+        "lowestPriceSinceEntry",
+        "openedAt",
+        "updatedAt",
+        "closedAt",
+        "exitPrice",
+        "exitReason",
+        "notes",
+      ],
+      snapshotFields: [
+        "code",
+        "name",
+        "status",
+        "entryPrice",
+        "currentPrice",
+        "quantity",
+        "highestPriceSinceEntry",
+        "lowestPriceSinceEntry",
+        "pnlAmount",
+        "pnlPercent",
+        "openedAt",
+        "updatedAt",
+        "closedAt",
+        "exitPrice",
+        "exitReason",
+        "notes",
+      ],
     },
 
-    diffValue: {
-      purpose: "代表價格到上緣的距離，用於溫度判斷與剩餘空間觀察。",
-      canonicalField: "diffValue",
-      interpretation: "差值越大，通常代表上方空間越大；差值越小，代表接近上緣或偏熱。",
-    },
-
-    upperBound: {
-      purpose: "代表結構區間的上緣，是 point21 與 diffValue 的上限參考。",
-      canonicalField: "upperBound",
-      interpretation: "上緣用來判斷價格在結構區間中的相對位置。",
-      formulaNote: "系統實務上採 point21 模組推導；概念上 upperBound 與 diffValue、simulatedPrice 共同構成平台區間。",
-    },
-
-    support: {
-      purpose: "定義支撐價、守穩天數、是否跌破，用於結構風控。",
-      fields: [
+    output: {
+      stockOutputFields: [
+        "code",
+        "name",
+        "price",
+        "change",
+        "changePercent",
+        "action",
+        "finalAction",
+        "risk",
+        "score",
+        "finalScore",
         "supportPrice",
         "supportDays",
         "structureBroken",
-        "supportReason",
-      ],
-      interpretation: {
-        valid: "支撐未破且連續守穩天數足夠，才算結構有效。",
-        broken: "跌破支撐或結構破壞，風險提升並偏向防守 / 出場。",
-      },
-      validDaysRule: "守穩 >= 3 天 才視為有效守穩，這是 Helmsman 抗雜訊核心。",
-    },
-
-    risk: {
-      purpose: "以三層風控管理持股，不只看價格，還看結構與時間驗證。",
-      layers: [
-        "結構風控：structureBroken / supportPrice / supportDays",
-        "時間風控：守穩天數驗證，避免假跌破與洗盤噪音",
-        "價格風控：stopLoss / trailingStop 作為最後防線",
-      ],
-      outputs: [
-        "riskLevel",
-        "canHold",
-        "shouldExit",
+        "marketState",
         "stopLossPrice",
         "trailingStopActive",
         "trailingStopPrice",
         "priceStopStatus",
-        "riskReason",
+        "canHold",
+        "shouldExit",
+        "hasPosition",
+        "positionStatus",
+        "entryPrice",
+        "highestPriceSinceEntry",
+        "lowestPriceSinceEntry",
+        "quantity",
+        "pnlAmount",
+        "pnlPercent",
+        "allowNewPosition",
+        "suggestedPositionSize",
+        "maxExposure",
+        "exposureStatus",
+        "exposureMessage",
+        "reason",
       ],
     },
   },
 
+  // ==========================================================
+  // 📈 評分 / 決策 / 風控規則
+  // ==========================================================
   decisionPolicy: {
-    baseLogic: [
-      "point21 >= 18 且結構未破 → 進攻候選",
-      "point21 >= 7 且 < 18 → 觀望 / 觀察",
-      "point21 < 7 或結構已破 → 防守",
-      "changePercent 大幅轉弱可直接強制防守",
-    ],
-    marketStateLogic: [
-      "市場狀態可為 攻擊 / 觀望 / 防守 / 修正",
-      "structureBroken 時 marketState 應偏防守",
-    ],
-    riskOverrideLogic: [
-      "riskEngine 的 shouldExit / canHold 會覆蓋 baseAction",
-      "若 shouldExit = true，finalAction 必須收斂為防守 / 出場方向",
-      "風控結果不是展示用，而是正式參與決策",
-    ],
-    finalActionValues: [
-      "進攻",
-      "觀望",
-      "防守",
+    point21ToScore: {
+      formula: "score = round2((clamp(point21Value, 0, 21) / 21) * 100)",
+      min: 0,
+      max: 100,
+    },
+
+    baseAction: {
+      structureBroken: "防守",
+      point21ValueGte18: "進攻",
+      point21ValueGte8: "觀望",
+      fallback: "防守",
+    },
+
+    marketGate: {
+      highestPriority: true,
+      rules: [
+        "若 shouldExit = true，finalAction = 防守",
+        "若 marketState = 修正，finalAction = 防守",
+        "若 marketState = 防守 且 baseAction = 進攻，finalAction = 觀望",
+        "若 marketState = 輪動 且 baseAction = 進攻 且 risk = 高，finalAction = 觀望",
+        "其餘維持 baseAction",
+      ],
+    },
+
+    reasonComposition: {
+      order: [
+        "point21Reason",
+        "supportReason",
+        "riskReason",
+        "marketGateReason",
+        "positionReason",
+      ],
+      dedupeBySemantic: true,
+    },
+  },
+
+  riskPolicy: {
+    coreIntent: "任何進攻都必須受結構與風控約束",
+    outputFields: [
+      "stopLossPrice",
+      "trailingStopActive",
+      "trailingStopPrice",
+      "trailingStopRule",
+      "structureRisk",
+      "timeValidation",
+      "priceStopStatus",
+      "canHold",
+      "shouldExit",
+      "riskReason",
     ],
   },
 
-  engineGovernance: {
-    singleSourceOfTruth: "decisionEngine 是唯一決策真相；其他 engine 只能提供輸入，不可自行替代 decision。",
-    engines: [
-      {
-        name: "marketDataEngine",
-        role: "取得 quote / kbars",
-        inputs: ["code"],
-        outputs: ["quote", "kbars"],
-        forbidden: ["不可做 decision", "不可做 risk", "不可產生交易結論"],
+  exitPolicy: {
+    immutablePriority: [
+      "structureBroken",
+      "priceStopStatus=移動停損觸發",
+      "priceStopStatus=停損觸發",
+      "currentPrice<=trailingStopPrice",
+      "currentPrice<=stopLossPrice",
+      "shouldExit || !canHold",
+    ],
+
+    exitTypes: [
+      "NONE",
+      "STOP_LOSS",
+      "TRAILING_STOP",
+      "STRUCTURE_BREAK",
+      "RISK_EXIT",
+    ],
+
+    rules: {
+      structureBrokenFirst: true,
+      closePositionOnTrigger: true,
+      noOpenPositionNoExit: true,
+    },
+  },
+
+  // ==========================================================
+  // 💰 倉位系統規格
+  // ==========================================================
+  exposurePolicy: {
+    canonicalStates: ["攻擊", "輪動", "防守", "修正"],
+
+    byMarketState: {
+      攻擊: {
+        allowNewPosition: true,
+        maxExposure: 1.0,
+        suggestedPositionSize: 0.25,
+        label: "攻擊",
       },
-      {
-        name: "point21Engine",
-        role: "計算 21點 / 平台 / 差值 / 上緣",
-        inputs: ["code", "price", "bars"],
-        outputs: [
-          "point21Value",
-          "point21Score",
-          "simulatedPrice",
-          "diffValue",
-          "upperBound",
-          "point21Reason",
-        ],
-        forbidden: ["不可做最終買賣決策", "不可發警報"],
+      輪動: {
+        allowNewPosition: true,
+        maxExposure: 0.6,
+        suggestedPositionSize: 0.15,
+        label: "輪動",
       },
-      {
-        name: "supportEngine",
-        role: "計算支撐與守穩結構",
-        inputs: ["code", "bars", "currentPrice"],
-        outputs: ["supportPrice", "supportDays", "structureBroken", "supportReason"],
-        forbidden: ["不可做最終買賣決策"],
+      防守: {
+        allowNewPosition: true,
+        maxExposure: 0.3,
+        suggestedPositionSize: 0.1,
+        label: "防守",
       },
-      {
-        name: "riskEngine",
-        role: "計算結構 / 時間 / 價格三層風控",
-        inputs: ["point21", "support", "position"],
-        outputs: [
-          "riskLevel",
-          "canHold",
-          "shouldExit",
-          "stopLossPrice",
-          "trailingStopPrice",
-          "riskReason",
-        ],
-        forbidden: ["不可單獨定義另一套 decision 真相"],
+      修正: {
+        allowNewPosition: false,
+        maxExposure: 0.1,
+        suggestedPositionSize: 0.05,
+        label: "修正",
       },
-      {
-        name: "decisionEngine",
-        role: "唯一決策來源，統一 action / score / risk / reason",
-        inputs: ["point21", "support", "risk"],
-        outputs: ["action", "finalAction", "score", "reason"],
-        forbidden: ["不可抓外部資料", "不可由 routes 替代"],
-      },
-      {
-        name: "positionEngine",
-        role: "管理持倉、進場價、最高價、平倉、持久化",
-        inputs: ["open / update / close requests"],
-        outputs: ["position snapshots"],
-        forbidden: ["不可自行生成策略", "不可取代 risk / decision"],
-      },
-      {
-        name: "exitEngine",
-        role: "根據 risk / trailing / stop loss 執行出場",
-        inputs: ["position", "risk outputs", "currentPrice"],
-        outputs: ["exitResult", "closed position"],
-        forbidden: ["不可獨立定義選股邏輯"],
-      },
-      {
-        name: "alertEngine",
-        role: "警報聚合，含 cooldown / dedupe / exit 整合",
-        inputs: ["decision", "risk", "position", "exitResult"],
-        outputs: ["alert message", "event type"],
-        forbidden: ["不可自行重算 decision"],
-      },
-      {
-        name: "fusionEngine",
-        role: "把 quote / point21 / support / risk / decision / position 收斂成單一輸入輸出",
-        inputs: ["code"],
-        outputs: ["fusion result"],
-        forbidden: ["不可成為第二個 decision source"],
-      },
+    },
+
+    rules: [
+      "修正市場禁止新倉",
+      "總倉位超限時禁止新增",
+      "建議單檔倉位由市場狀態決定",
+      "positionEngine 是倉位政策唯一來源",
     ],
   },
 
+  // ==========================================================
+  // 🚨 Alert 規格
+  // ==========================================================
+  alertPolicy: {
+    eventTypes: [
+      "NONE",
+      "ATTACK_ENTRY",
+      "WATCH_ALERT",
+      "DEFENSE_ALERT",
+      "EXIT_ALERT",
+    ],
+
+    allow: {
+      attack: true,
+      watch: true,
+      defense: true,
+      exit: true,
+    },
+
+    controls: {
+      cooldownMs: 300000,
+      dedupeByAction: true,
+      dedupeByScoreBucket: true,
+      exitAlertBypassCooldown: true,
+      exitAlertBypassDedupe: true,
+    },
+
+    principles: [
+      "該發才發",
+      "不重複發",
+      "不洗版",
+      "出場警報優先",
+    ],
+  },
+
+  // ==========================================================
+  // 💾 持久化規格
+  // ==========================================================
+  persistence: {
+    positionStoreFile: "server/data/positions.json",
+    version: 1,
+    requiredTopLevelFields: [
+      "version",
+      "updatedAt",
+      "positions",
+      "latestPrices",
+    ],
+    rules: [
+      "openPosition 後立即寫入",
+      "updatePosition 後立即寫入",
+      "closePosition 後立即寫入",
+      "server 啟動時載入",
+      "重啟後必須恢復持倉",
+    ],
+  },
+
+  // ==========================================================
+  // 🌐 API / Route 治理
+  // ==========================================================
   routeGovernance: {
-    rule: "routes 只能轉接 engine，不可自行寫交易邏輯。",
-    routes: [
-      {
-        path: "/api/stock/:code",
-        purpose: "單股查詢",
-        restriction: "只能呼叫 fusion → output",
-      },
-      {
-        path: "/api/scanner",
-        purpose: "多股掃描",
-        restriction: "只能以同一套 decision / fusion 輸出排序",
-      },
-      {
-        path: "/api/position/*",
-        purpose: "持倉管理",
-        restriction: "只能呼叫 positionEngine",
-      },
-      {
-        path: "/webhook",
-        purpose: "LINE 指令與回覆",
-        restriction: "不可在 route 內自行產生另一套判斷",
-      },
+    allowedCoreRoutes: [
+      "/",
+      "/api/stock",
+      "/api/scanner",
+      "/api/position",
+      "/api/support/status",
+      "/api/support/run",
+      "/api/auto-alert/status",
+      "/api/auto-alert/run",
+      "/webhook",
+    ],
+
+    webhookCommands: [
+      "查xxxx",
+      "掃描",
+      "持倉",
+      "help",
+      "幫助",
+      "指令",
+    ],
+
+    rules: [
+      "Routes 只負責收參數與回傳",
+      "Routes 不可自行計算決策",
+      "Webhook 必須回 WEBHOOK-V2 格式",
+      "單股查詢必須可顯示持倉 / 倉位 / 風控 / 判斷",
     ],
   },
 
+  // ==========================================================
+  // 🖥 Frontend / Output 治理
+  // ==========================================================
   outputPolicy: {
-    webhookTag: "[WEBHOOK-V2]",
-    sections: [
-      "📊 基本報價",
-      "📌 結構",
-      "📌 決策",
-      "📌 持倉",
-      "📌 風控",
-      "📌 判斷",
+    webhookVersion: "WEBHOOK-V2",
+
+    requiredSectionsInStockReply: [
+      "市場",
+      "結構",
+      "決策",
+      "倉位",
+      "持倉",
+      "風控",
+      "判斷",
     ],
-    requiredFields: [
-      "price",
-      "change",
-      "changePercent",
-      "supportPrice / supportDays / structureBroken",
-      "action / risk / score",
-      "position status",
-      "stopLoss / trailing",
-      "reason",
+
+    scannerTopN: 5,
+
+    displayRules: [
+      "單股輸出必須先顯示決策，再顯示持倉與風控",
+      "若持倉存在，必須顯示 OPEN / CLOSED 狀態",
+      "若倉位政策存在，必須顯示新倉 / 建議單檔 / 總倉上限 / 倉位狀態",
+      "原因欄位必須以結構化敘述輸出，不可隨機漂移",
     ],
   },
 
-  persistencePolicy: {
-    configFile: "server/config/helmsmanConfig.ts",
-    positionStore: "server/data/positions.json",
-    rationale: [
-      "AI 記憶只能降低漂移，不能取代系統記憶",
-      "規則要寫進 config",
-      "持倉要寫進 json 或資料庫",
-      "重啟後端後不可遺失 position",
+  // ==========================================================
+  // 🧪 測試 / 壓測 / 升級標準
+  // ==========================================================
+  qualityGate: {
+    currentLevel: "8.9",
+    levelDefinition: {
+      "1": "架構萌芽",
+      "2": "資料流建立",
+      "3": "模型與結構初步完成",
+      "4": "API 可用",
+      "5": "前後端接通",
+      "6": "風控與市場閘門接入",
+      "7": "主模組齊備",
+      "8": "技術閉環完成",
+      "8.9": "主鏈 + 生態池完成，準備衝 Level 9",
+      "9": "多用戶 / 長時間 / 壓測穩定完成",
+    },
+
+    level9Required: [
+      "多用戶可用",
+      "長時間穩定",
+      "掃描 / webhook / alert 壓測通過",
+      "無漂移",
+      "規格凍結",
     ],
   },
 
-  handoffPolicy: {
-    whatFutureAIShouldReadFirst: [
+  // ==========================================================
+  // ⚙ 工程軍令
+  // ==========================================================
+  engineeringRules: {
+    fullFileOverwriteOnly: true,
+    noPatchStyle: true,
+    noPartialInsert: true,
+    noInlineHotfixNarrative: true,
+    antiDrift: true,
+    copyPasteReady: true,
+    routeLogicSeparation: true,
+  },
+
+  // ==========================================================
+  // 🔒 防漂移規則
+  // ==========================================================
+  antiDrift: {
+    statements: [
+      "沒有寫進 spec 的規則，不視為正式規則",
+      "任何模組輸出不得背離 spec",
+      "若 spec 與敘事衝突，以 spec 為準",
+      "若新功能破壞主鏈，視為不合格",
+    ],
+  },
+
+  // ==========================================================
+  // 📁 關鍵檔案索引
+  // ==========================================================
+  canonicalFiles: {
+    config: [
       "server/config/helmsmanSpec.ts",
       "server/config/helmsmanConfig.ts",
+    ],
+    engines: [
+      "server/engines/marketDataEngine.ts",
+      "server/engines/point21Engine.ts",
+      "server/engines/supportEngine.ts",
+      "server/engines/marketStateEngine.ts",
       "server/engines/fusionEngine.ts",
       "server/engines/decisionEngine.ts",
-      "server/engines/riskEngine.ts",
       "server/engines/positionEngine.ts",
+      "server/engines/exitEngine.ts",
+      "server/engines/alertEngine.ts",
+      "server/engines/autoSupportEngine.ts",
+      "server/engines/autoAlertEngine.ts",
     ],
-    antiDriftRules: [
-      "不可重新發明第二套決策真相",
-      "不可讓 routes 直接寫策略",
-      "不可繞過 decisionEngine",
-      "不可局部 patch，需整檔覆蓋同步",
-      "若要改閾值，先改 helmsmanConfig.ts，不要散改 engine",
+    routes: [
+      "server/routes/healthRoutes.ts",
+      "server/routes/stockRoutes.ts",
+      "server/routes/scannerRoutes.ts",
+      "server/routes/webhookRoutes.ts",
+      "server/routes/positionRoutes.ts",
+    ],
+    services: [
+      "server/services/outputService.ts",
+      "server/services/lineReplyService.ts",
+    ],
+    data: [
+      "server/data/positions.json",
+    ],
+    entry: [
+      "server/server.ts",
     ],
   },
-};
+} as const;
+
+// ==========================================================
+// TYPES
+// ==========================================================
+
+export type HelmsmanSpec = typeof HELMSMAN_SPEC;
+export type HelmsmanMarketState =
+  keyof typeof HELMSMAN_SPEC.exposurePolicy.byMarketState;
+
+// ==========================================================
+// HELPERS
+// ==========================================================
+
+function normalizeText(value: unknown): string {
+  return String(value || "").trim();
+}
+
+export function normalizeMarketState(value: unknown): HelmsmanMarketState {
+  const state = normalizeText(value);
+
+  if (state === "ATTACK" || state === "攻擊") return "攻擊";
+  if (state === "ROTATION" || state === "輪動") return "輪動";
+  if (state === "DEFENSE" || state === "防守") return "防守";
+  if (state === "CORRECTION" || state === "修正") return "修正";
+
+  return "防守";
+}
+
+export function getMarketExposurePolicy(value: unknown) {
+  const state = normalizeMarketState(value);
+  return HELMSMAN_SPEC.exposurePolicy.byMarketState[state];
+}
+
+export function isNewPositionAllowed(value: unknown): boolean {
+  return getMarketExposurePolicy(value).allowNewPosition;
+}
+
+export function getMaxExposure(value: unknown): number {
+  return getMarketExposurePolicy(value).maxExposure;
+}
+
+export function getSuggestedPositionSize(value: unknown): number {
+  return getMarketExposurePolicy(value).suggestedPositionSize;
+}
+
+export function getExitPriority(): readonly string[] {
+  return HELMSMAN_SPEC.exitPolicy.immutablePriority;
+}
+
+export function getWebhookVersion(): string {
+  return HELMSMAN_SPEC.outputPolicy.webhookVersion;
+}
+
+export function getPositionStoreFile(): string {
+  return HELMSMAN_SPEC.persistence.positionStoreFile;
+}
+
+export function getCurrentHelmsmanLevel(): string {
+  return HELMSMAN_SPEC.qualityGate.currentLevel;
+}
 
 export default HELMSMAN_SPEC;

@@ -22,7 +22,7 @@ export type Point21Output = {
   point21Score: number;      // 0~100
   point21Value: number;      // 0~21
   simulatedPrice: number;    // 平台基準價
-  diffValue: number;         // 老師差值
+  diffValue: number;         // 上緣距離
   upperBound: number;        // 反推出來的上緣
   positionRatio: number;     // 0~1，價格在區間中的位置
   point21State: "弱" | "中" | "強";
@@ -67,7 +67,7 @@ function normalizeBars(bars?: Point21InputBar[]): Required<Point21InputBar>[] {
       low: safeNumber(bar?.low, 0),
       close: safeNumber(bar?.close, 0),
     }))
-    .filter((bar) => bar.close > 0 && bar.high > 0 && bar.low > 0);
+    .filter((bar) => bar.close > 0);
 }
 
 function percentile(sortedAsc: number[], p: number): number {
@@ -84,53 +84,28 @@ function percentile(sortedAsc: number[], p: number): number {
   return sortedAsc[lower] * (1 - weight) + sortedAsc[upper] * weight;
 }
 
-function avg(values: number[]): number {
-  if (!values.length) return 0;
-  return values.reduce((a, b) => a + b, 0) / values.length;
-}
-
-/**
- * 老師對齊平台價
- * - 比母版更貼近低點
- * - 保留穩定，不要太極端
- */
 function inferSimulatedPrice(price: number, bars: Required<Point21InputBar>[]): number {
   if (bars.length < 5) return round2(price);
 
   const recent = bars.slice(-21);
-  const lows = recent
-    .map((b) => b.low)
-    .filter((v) => v > 0)
-    .sort((a, b) => a - b);
+  const lows = recent.map((b) => b.low).filter((v) => v > 0).sort((a, b) => a - b);
 
   if (!lows.length) return round2(price);
 
-  const minLow = lows[0];
-  const avgLow = avg(lows);
-
-  // 老師對齊版：比原本 25% 分位更貼低點，但不極端
-  return round2(minLow * 0.82 + avgLow * 0.18);
+  // 用低點群 25% 分位，讓平台基準偏向老師「平台價」的感覺
+  return round2(percentile(lows, 0.25));
 }
 
-/**
- * 老師對齊上緣
- * - 比母版更貼近高點
- */
 function inferUpperBound(price: number, bars: Required<Point21InputBar>[]): number {
   if (bars.length < 5) return round2(price);
 
   const recent = bars.slice(-21);
-  const highs = recent
-    .map((b) => b.high)
-    .filter((v) => v > 0)
-    .sort((a, b) => a - b);
+  const highs = recent.map((b) => b.high).filter((v) => v > 0).sort((a, b) => a - b);
 
   if (!highs.length) return round2(price);
 
-  const maxHigh = highs[highs.length - 1];
-  const avgHigh = avg(highs);
-
-  return round2(maxHigh * 0.76 + avgHigh * 0.24);
+  // 用高點群 75% 分位，避免單一極端高點污染
+  return round2(percentile(highs, 0.75));
 }
 
 function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUpper: number): number {
@@ -147,50 +122,18 @@ function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUppe
   return round2(simulatedPrice);
 }
 
-/**
- * 老師對齊 21點 mapping
- * ratio 越低（越接近平台）→ 點數越高
- * ratio 越高（越接近上緣）→ 點數越低
- */
-function teacherMap(ratio: number): number {
-  if (ratio <= 0.04) return 21;
-  if (ratio <= 0.09) return 20;
-  if (ratio <= 0.16) return 19;
-  if (ratio <= 0.25) return 18;
-  if (ratio <= 0.35) return 16;
-  if (ratio <= 0.47) return 14;
-  if (ratio <= 0.60) return 12;
-  if (ratio <= 0.72) return 10;
-  if (ratio <= 0.84) return 8;
-  if (ratio <= 0.94) return 5;
-  return 0;
-}
-
-/**
- * 老師對齊差值
- * - 若已有 teacherDiffValue，直接採用
- * - 否則用剩餘空間比例 + 區間百分比做平滑壓縮
- */
 function inferDiffValue(price: number, simulatedPrice: number, upperBound: number): number {
-  const range = upperBound - simulatedPrice;
-  if (range <= 0 || simulatedPrice <= 0 || price <= 0) return 0;
-
-  const remain = upperBound - price;
-  const remainRatio = clamp(remain / range, 0, 1);
-
-  const rawRangePct = (range / simulatedPrice) * 100;
-
-  // 13.5 是目前對老師樣本最穩的量化倍率
-  const scaled = Math.sqrt(remainRatio) * rawRangePct * 13.5;
-
-  return round2(Math.max(0, scaled));
+  if (upperBound <= 0) return 0;
+  return round2(Math.max(0, upperBound - price));
 }
 
 function inferPointValue(price: number, simulatedPrice: number, upperBound: number): number {
   if (price <= 0 || upperBound <= simulatedPrice) return 0;
 
   const ratio = clamp((price - simulatedPrice) / (upperBound - simulatedPrice), 0, 1);
-  return clamp(teacherMap(ratio), 0, 21);
+
+  // 與老師風格收斂：越靠近上緣，點數越低
+  return clamp(21 - Math.round(ratio * 21), 0, 21);
 }
 
 function inferPositionRatio(price: number, simulatedPrice: number, upperBound: number): number {
@@ -232,18 +175,18 @@ export function runPoint21(input: Point21Input): Point21Output {
   const price = round2(safeNumber(input?.price, 0));
   const bars = normalizeBars(input?.bars);
 
-  const teacherMapData = TEACHER_POINT21_MAP[code];
+  const teacherMap = TEACHER_POINT21_MAP[code];
 
   const teacherPoint = safeNumber(
-    input?.teacher?.pointValue ?? teacherMapData?.pointValue,
+    input?.teacher?.pointValue ?? teacherMap?.pointValue,
     Number.NaN
   );
   const teacherSimulatedPrice = safeNumber(
-    input?.teacher?.simulatedPrice ?? teacherMapData?.simulatedPrice,
+    input?.teacher?.simulatedPrice ?? teacherMap?.simulatedPrice,
     Number.NaN
   );
   const teacherDiffValue = safeNumber(
-    input?.teacher?.diffValue ?? teacherMapData?.diffValue,
+    input?.teacher?.diffValue ?? teacherMap?.diffValue,
     Number.NaN
   );
 
@@ -254,13 +197,11 @@ export function runPoint21(input: Point21Input): Point21Output {
     ? round2(teacherSimulatedPrice)
     : inferredSimulatedPrice;
 
-  const upperBound = Number.isFinite(teacherDiffValue)
-    ? buildUpperBound(
-        simulatedPrice,
-        round2(teacherDiffValue),
-        inferredUpperBound
-      )
-    : round2(Math.max(inferredUpperBound, simulatedPrice + 1));
+  const upperBound = buildUpperBound(
+    simulatedPrice,
+    Number.isFinite(teacherDiffValue) ? round2(teacherDiffValue) : 0,
+    inferredUpperBound
+  );
 
   const diffValue = Number.isFinite(teacherDiffValue)
     ? round2(teacherDiffValue)
