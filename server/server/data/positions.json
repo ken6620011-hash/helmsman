@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": 1775199989398,
+  "updatedAt": 1775201474245,
   "positions": [
     {
       "code": "2330",
@@ -12,7 +12,7 @@
       "highestPriceSinceEntry": 1810,
       "lowestPriceSinceEntry": 1810,
       "openedAt": 1775194487957,
-      "updatedAt": 1775199989398
+      "updatedAt": 1775201474245
     }
   ],
   "latestPrices": {
