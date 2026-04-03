@@ -29,10 +29,7 @@ export type Point21Output = {
   point21Reason: string;
 };
 
-// ========================================
 // 量化模式：不使用固定老師表
-// 只保留 input.teacher 手動覆蓋能力
-// ========================================
 const TEACHER_POINT21_MAP: Record<
   string,
   { pointValue: number; simulatedPrice: number; diffValue: number }
@@ -73,74 +70,44 @@ function avg(values: number[]): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-function percentile(sortedAsc: number[], p: number): number {
-  if (!sortedAsc.length) return 0;
-  if (sortedAsc.length === 1) return sortedAsc[0];
-
-  const index = (sortedAsc.length - 1) * p;
-  const lower = Math.floor(index);
-  const upper = Math.ceil(index);
-
-  if (lower === upper) return sortedAsc[lower];
-
-  const weight = index - lower;
-  return sortedAsc[lower] * (1 - weight) + sortedAsc[upper] * weight;
-}
-
-function recentBars(bars: Required<Point21InputBar>[], size = 21): Required<Point21InputBar>[] {
+function recent21(bars: Required<Point21InputBar>[]): Required<Point21InputBar>[] {
   if (!bars.length) return [];
-  return bars.slice(-size);
+  return bars.slice(-21);
 }
 
 /**
- * 老師等級平台還原：
- * - 不是直接取最低點
- * - 也不是單純 25% 分位
- * - 用「低點群 + 收盤群」混合
- *
- * 目的：
- * 1. 避免平台太低
- * 2. 讓 2330 這類股票的平台更接近老師
+ * 回退到前一版骨架，只做小幅校正
+ * - 平台不能壓太低
+ * - 也不能抬太高
  */
 function inferSimulatedPrice(price: number, bars: Required<Point21InputBar>[]): number {
-  const recent = recentBars(bars, 21);
+  const recent = recent21(bars);
   if (recent.length < 5) return round2(price);
 
-  const lows = recent.map((b) => b.low).filter((v) => v > 0).sort((a, b) => a - b);
-  const closes = recent.map((b) => b.close).filter((v) => v > 0).sort((a, b) => a - b);
+  const lows = recent.map((b) => b.low).filter((v) => v > 0);
+  if (!lows.length) return round2(price);
 
-  if (!lows.length || !closes.length) return round2(price);
-
-  const p20Low = percentile(lows, 0.20);
-  const p35Close = percentile(closes, 0.35);
+  const minLow = Math.min(...lows);
   const avgLow = avg(lows);
 
-  // 平台略抬高，避免像 2330 那樣被壓太低
-  const simulated = p20Low * 0.45 + p35Close * 0.40 + avgLow * 0.15;
-
-  return round2(simulated);
+  // 比上一版略微抬高一點點，避免 2330 平台過低
+  return round2(minLow * 0.78 + avgLow * 0.22);
 }
 
 /**
- * 老師等級上緣還原：
- * - 不是單純高點均值
- * - 更接近高點群上分位
+ * 上緣：延續上一版穩定骨架，只做小幅微調
  */
 function inferUpperBound(price: number, bars: Required<Point21InputBar>[]): number {
-  const recent = recentBars(bars, 21);
+  const recent = recent21(bars);
   if (recent.length < 5) return round2(price);
 
-  const highs = recent.map((b) => b.high).filter((v) => v > 0).sort((a, b) => a - b);
-  const closes = recent.map((b) => b.close).filter((v) => v > 0).sort((a, b) => a - b);
+  const highs = recent.map((b) => b.high).filter((v) => v > 0);
+  if (!highs.length) return round2(price);
 
-  if (!highs.length || !closes.length) return round2(price);
+  const maxHigh = Math.max(...highs);
+  const avgHigh = avg(highs);
 
-  const p80High = percentile(highs, 0.80);
-  const p90High = percentile(highs, 0.90);
-  const p75Close = percentile(closes, 0.75);
-
-  const upper = p80High * 0.45 + p90High * 0.35 + p75Close * 0.20;
-  return round2(upper);
+  return round2(maxHigh * 0.72 + avgHigh * 0.28);
 }
 
 function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUpper: number): number {
@@ -158,39 +125,27 @@ function buildUpperBound(simulatedPrice: number, diffValue: number, fallbackUppe
 }
 
 /**
- * 老師等級 21 點分段
- * ratio = (price - platform) / (upper - platform)
- *
- * 越接近平台 → 點數越高
- * 越接近上緣 → 點數越低
+ * 老師分段
+ * 保留前一版較穩的 mapping，不做暴力改動
  */
 function teacherMap(ratio: number): number {
-  if (ratio <= 0.05) return 21;
-  if (ratio <= 0.10) return 20;
-  if (ratio <= 0.17) return 19;
-  if (ratio <= 0.26) return 18;
-  if (ratio <= 0.36) return 16;
-  if (ratio <= 0.48) return 14;
-  if (ratio <= 0.61) return 12;
-  if (ratio <= 0.73) return 10;
-  if (ratio <= 0.84) return 8;
-  if (ratio <= 0.93) return 5;
+  if (ratio <= 0.04) return 21;
+  if (ratio <= 0.09) return 20;
+  if (ratio <= 0.16) return 19;
+  if (ratio <= 0.24) return 18;
+  if (ratio <= 0.33) return 16;
+  if (ratio <= 0.44) return 14;
+  if (ratio <= 0.57) return 12;
+  if (ratio <= 0.69) return 10;
+  if (ratio <= 0.81) return 8;
+  if (ratio <= 0.92) return 5;
   return 0;
 }
 
 /**
- * 老師等級差值還原：
- * 不是 upper - price
- * 不是單純線性
- *
- * 老師圖特性：
- * - 高位時差值下降不會太快
- * - 中段要平滑
- * - 低位要自然收斂
- *
- * 所以用：
- * remainRatio ^ 0.42
- * 再乘上區間百分比與倍率
+ * 差值：回到「溫和非線性」
+ * 不用上一版太兇的 power 0.42
+ * 改回比較接近老師的 sqrt 型態，再做小幅倍率調整
  */
 function inferDiffValue(price: number, simulatedPrice: number, upperBound: number): number {
   const range = upperBound - simulatedPrice;
@@ -198,11 +153,10 @@ function inferDiffValue(price: number, simulatedPrice: number, upperBound: numbe
 
   const remain = upperBound - price;
   const remainRatio = clamp(remain / range, 0, 1);
+  const rawRangePct = (range / simulatedPrice) * 100;
 
-  const rangePct = (range / simulatedPrice) * 100;
-
-  // 老師等級還原倍率
-  const scaled = Math.pow(remainRatio, 0.42) * rangePct * 14.2;
+  // 比原本 13.5 稍微往上校正，但不暴衝
+  const scaled = Math.sqrt(remainRatio) * rawRangePct * 13.9;
 
   return round2(Math.max(0, scaled));
 }
@@ -257,7 +211,7 @@ export function runPoint21(input: Point21Input): Point21Output {
 
   // 量化模式：
   // 固定 teacher map 為空
-  // 只保留人工 teacher override
+  // 僅保留人工 teacher override
   const teacherPoint = safeNumber(
     input?.teacher?.pointValue ?? teacherMapData?.pointValue,
     Number.NaN
